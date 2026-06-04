@@ -9,12 +9,12 @@
  *   pi -e ./pi2pi.ts --agent-name Alice --room engineering --broker ws://localhost:7331
  *
  * Commands:
- *   /tell <name> <message>      — send a message to a specific agent
+ *   /tell <name> <message>      — send a message to a specific agent (fire-and-forget)
  *   /tell everyone <message>    — broadcast to all connected agents
+ *   /replies                    — show messages still awaiting a reply
  *   /who                        — show who is currently connected
  *
- * The message is routed to the named agent, processed by that agent's LLM,
- * and the reply is delivered back and displayed in your conversation.
+ * Replies arrive automatically as follow-up messages; no polling required.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -57,18 +57,15 @@ export default function (pi: ExtensionAPI) {
 	// Pushed when the broker delivers "incoming", shifted in agent_end after each reply turn.
 	const incomingQueue: Array<{ id: string; from: string }> = [];
 
-	// Outgoing messages we are waiting for a reply to: id → { to }
-	const pendingOutgoing = new Map<string, { to: string }>();
-
-	// Replies received from other agents, accumulated until read
-	const arrivedReplies: Array<{ from: string; content: string; at: Date }> = [];
+	// Outgoing messages still awaiting a reply: id → { to, message, sentAt }
+	const pendingOutgoing = new Map<string, { to: string; message: string; sentAt: Date }>();
 
 	// Latest online agent list from the broker
 	let onlineAgents: string[] = [];
 
 	// ── Custom message renderers ─────────────────────────────────────────────
 
-	// "📤 Sent to @Bob: ..." — shown in the sender's conversation
+	// "Asked @Bob: ..." — shown in the sender's conversation
 	pi.registerMessageRenderer("pi2pi-sent", (message, _options, theme) => {
 		const details = message.details as { to: string; broadcast?: boolean } | undefined;
 		const to = details?.to ?? "?";
@@ -80,7 +77,7 @@ export default function (pi: ExtensionAPI) {
 		return box;
 	});
 
-	// "💬 @Bob: ..." — the reply received from a remote agent
+	// "@Bob replied: ..." — the reply received from a remote agent
 	pi.registerMessageRenderer("pi2pi-reply", (message, { expanded }, theme) => {
 		const details = message.details as { from: string; full: string } | undefined;
 		const from = details?.from ?? "?";
@@ -92,7 +89,7 @@ export default function (pi: ExtensionAPI) {
 		return box;
 	});
 
-	// "📨 @Alice: ..." — an incoming request from another agent, shown in the recipient's session
+	// "@Alice: ..." — an incoming request from another agent, shown in the recipient's session
 	pi.registerMessageRenderer("pi2pi-incoming", (message, { expanded }, theme) => {
 		const details = message.details as { from: string; message: string } | undefined;
 		const from = details?.from ?? "?";
@@ -104,18 +101,21 @@ export default function (pi: ExtensionAPI) {
 		return box;
 	});
 
-	// "/replies" list display
-	pi.registerMessageRenderer("pi2pi-replies", (message, _options, theme) => {
-		const details = message.details as { replies: Array<{ from: string; content: string; at: string }> } | undefined;
-		const replies = details?.replies ?? [];
+	// "⏳ Pending replies ..." — shown by /replies command
+	pi.registerMessageRenderer("pi2pi-pending", (message, _options, theme) => {
+		const details = message.details as { pending: Array<{ to: string; message: string; sentAt: string }> } | undefined;
+		const pending = details?.pending ?? [];
 		const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
-		if (replies.length === 0) {
-			box.addChild(new Text(theme.fg("muted", "No replies yet."), 0, 0));
+		if (pending.length === 0) {
+			box.addChild(new Text(theme.fg("muted", "No pending messages — all replies have been received."), 0, 0));
 		} else {
-			const lines = replies.map(
-				(r) => theme.fg("accent", r.from) + theme.fg("muted", " replied: ") + r.content,
+			const header = theme.fg("accent", `⏳ Pending replies (${pending.length})`) + "\n";
+			const lines = pending.map(
+				(p) =>
+					theme.fg("accent", p.to) +
+					theme.fg("muted", ` — "${p.message}" (sent ${new Date(p.sentAt).toLocaleTimeString()})`),
 			);
-			box.addChild(new Text(lines.join("\n\n"), 0, 0));
+			box.addChild(new Text(header + lines.join("\n"), 0, 0));
 		}
 		return box;
 	});
@@ -257,9 +257,14 @@ export default function (pi: ExtensionAPI) {
 				pendingOutgoing.delete(id);
 				refreshStatus();
 
-				// Accumulate the reply for later retrieval via the replies tool or /replies command.
-				arrivedReplies.push({ from, content, at: new Date() });
-				notify(`Reply from ${from} — use the replies tool or /replies to read it`, "info");
+				// Inject the reply as a follow-up turn so the LLM sees it automatically,
+				// regardless of what else the agent is doing at the time.
+				pi.sendMessage({
+					customType: "pi2pi-reply",
+					content: `Reply from ${from}: ${content}`,
+					display: true,
+					details: { from, full: content },
+				}, { triggerTurn: true, deliverAs: "followUp" });
 				break;
 			}
 
@@ -314,7 +319,6 @@ export default function (pi: ExtensionAPI) {
 		agentRoom = null;
 		incomingQueue.length = 0;
 		pendingOutgoing.clear();
-		arrivedReplies.length = 0;
 		onlineAgents = [];
 		if (ws) {
 			try {
@@ -351,13 +355,16 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "tell",
 		label: "Tell",
-		description: "Send a message to another agent in the same room and return their reply. Use who first if you are unsure who is available.",
-		promptSnippet: "Send a message to another pi agent and get their reply",
+		description:
+			"Send a message to another agent and return immediately — do not wait. " +
+			"The reply will arrive automatically as a follow-up message when ready. " +
+			"Use the replies tool only to check what is still outstanding.",
+		promptSnippet: "Send a message to another pi agent (fire-and-forget; reply arrives automatically)",
 		parameters: Type.Object({
 			to: Type.String({ description: 'Agent name to message, or "everyone" to broadcast to all connected agents' }),
 			message: Type.String({ description: "Message to send" }),
 		}),
-		async execute(_toolCallId, params, signal, onUpdate) {
+		async execute(_toolCallId, params) {
 			if (!agentName) throw new Error("Pi2Pi: --agent-name flag is required");
 			if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("Pi2Pi: not connected to broker");
 
@@ -369,30 +376,44 @@ export default function (pi: ExtensionAPI) {
 
 			for (const target of targets) {
 				const msgId = randomUUID();
-				pendingOutgoing.set(msgId, { to: target });
+				pendingOutgoing.set(msgId, { to: target, message: params.message, sentAt: new Date() });
 				ws!.send(JSON.stringify({ type: "message", id: msgId, to: target, content: params.message }));
 			}
 			refreshStatus();
 
 			const targetList = targets.join(", ");
-			return { content: [{ type: "text", text: `Message sent to ${targetList}. Use the replies tool to check for responses when ready.` }] };
+			return {
+				content: [{
+					type: "text",
+					text: `Message sent to ${targetList}. The reply will arrive automatically when ready — carry on with other work.`,
+				}],
+			};
 		},
 	});
 
 	pi.registerTool({
 		name: "replies",
 		label: "Replies",
-		description: "Check for replies from agents you have messaged. Returns all replies received since you last checked, then clears them.",
-		promptSnippet: "Check for replies from agents you have messaged",
+		description:
+			"Show messages you have sent that are still awaiting a reply. " +
+			"Replies arrive automatically in your conversation — you do not need to call this to receive them. " +
+			"Use it only to check what is still outstanding.",
+		promptSnippet: "Check which messages are still awaiting a reply from other agents",
 		parameters: Type.Object({}),
 		async execute() {
 			if (!agentName) throw new Error("Pi2Pi: not connected");
-			if (arrivedReplies.length === 0) {
-				return { content: [{ type: "text", text: "No replies received yet." }] };
+			if (pendingOutgoing.size === 0) {
+				return { content: [{ type: "text", text: "No pending messages — all replies have been received." }] };
 			}
-			const lines = arrivedReplies.map((r) => `${r.from}: ${r.content}`);
-			arrivedReplies.length = 0;
-			return { content: [{ type: "text", text: lines.join("\n\n") }] };
+			const lines = [...pendingOutgoing.values()].map(
+				(p) => `${p.to}: "${p.message}" (sent ${p.sentAt.toLocaleTimeString()})`,
+			);
+			return {
+				content: [{
+					type: "text",
+					text: `Pending replies (${pendingOutgoing.size}):\n${lines.join("\n")}`,
+				}],
+			};
 		},
 	});
 
@@ -415,7 +436,7 @@ export default function (pi: ExtensionAPI) {
 	// ── Commands ──────────────────────────────────────────────────────────────
 
 	pi.registerCommand("tell", {
-		description: "Send a message to another agent. Usage: /tell <name|everyone> <message>",
+		description: "Send a message to another agent (fire-and-forget). Usage: /tell <name|everyone> <message>",
 
 		// Autocomplete: first word = agent name or 'everyone'
 		getArgumentCompletions(prefix: string) {
@@ -472,7 +493,7 @@ export default function (pi: ExtensionAPI) {
 
 				for (const target of targets) {
 					const msgId = randomUUID();
-					pendingOutgoing.set(msgId, { to: target });
+					pendingOutgoing.set(msgId, { to: target, message: content, sentAt: new Date() });
 					ws!.send(JSON.stringify({ type: "message", id: msgId, to: target, content }));
 				}
 			} else {
@@ -483,7 +504,7 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				const msgId = randomUUID();
-				pendingOutgoing.set(msgId, { to: targetName });
+				pendingOutgoing.set(msgId, { to: targetName, message: content, sentAt: new Date() });
 
 				pi.sendMessage({
 					customType: "pi2pi-sent",
@@ -500,15 +521,20 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("replies", {
-		description: "Show replies received from other agents",
+		description: "Show messages still awaiting a reply (replies arrive automatically when they come in)",
 		handler: async (_args, _ctx) => {
-			const snapshot = arrivedReplies.map((r) => ({ from: r.from, content: r.content, at: r.at.toISOString() }));
-			arrivedReplies.length = 0;
+			const pending = [...pendingOutgoing.values()].map((p) => ({
+				to: p.to,
+				message: p.message,
+				sentAt: p.sentAt.toISOString(),
+			}));
 			pi.sendMessage({
-				customType: "pi2pi-replies",
-				content: snapshot.length ? snapshot.map((r) => `${r.from}: ${r.content}`).join("\n") : "No replies yet.",
+				customType: "pi2pi-pending",
+				content: pending.length
+					? pending.map((p) => `${p.to}: "${p.message}"`).join("\n")
+					: "No pending messages.",
 				display: true,
-				details: { replies: snapshot },
+				details: { pending },
 			});
 		},
 	});
