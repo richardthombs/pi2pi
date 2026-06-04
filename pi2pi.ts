@@ -18,6 +18,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
@@ -385,6 +386,7 @@ export default function (pi: ExtensionAPI) {
 		pendingDelivery.clear();
 		sentHistory.clear();
 		replyBuffer.clear();
+		readReplyMeta.clear();
 		// Reject any in-flight wait calls so they don't hang forever.
 		for (const resolve of replyWaiters.values()) resolve(); // resolving is safe; wait checks buffer
 		replyWaiters.clear();
@@ -567,9 +569,12 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// Metadata for read_reply render, keyed by toolCallId.
+	const readReplyMeta = new Map<string, { from: string }>();
+
 	pi.registerTool({
-		name: "read",
-		label: "Read",
+		name: "read_reply",
+		label: "Read Reply",
 		description:
 			"Read the reply for a specific sent message. " +
 			"The reply is removed from the queue so it will not be delivered again as a follow-up message. " +
@@ -578,10 +583,19 @@ export default function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			id: Type.String({ description: "The message id to read the reply for" }),
 		}),
-		async execute(_toolCallId, params) {
+		renderResult(result, { expanded }, theme, context) {
+			const from = readReplyMeta.get(context.toolCallId)?.from ?? "?";
+			if (!expanded) {
+				return new Text(theme.fg("muted", "Reply received from ") + theme.fg("accent", from), 0, 0);
+			}
+			const text = result.content?.[0]?.type === "text" ? result.content[0].text : "";
+			return new Text(text, 0, 0);
+		},
+		async execute(toolCallId, params) {
 			const entry = replyBuffer.get(params.id);
 			if (!entry) throw new Error(`No reply available for id ${params.id} — has it arrived yet? Use the wait tool first.`);
 			entry.claimed = true;
+			if (toolCallId) readReplyMeta.set(toolCallId, { from: entry.from });
 			return {
 				content: [{
 					type: "text",

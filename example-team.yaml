@@ -1,0 +1,53 @@
+team:
+  name: engineering
+  broker: ws://localhost:7331
+
+roles:
+  engineer:
+    title: Software Engineer
+    description: Writes and reviews code, fixes bugs, and implements features
+    model: github-copilot/claude-sonnet-4.6
+    tools:
+      - bash
+      - read
+      - write
+      - edit
+      - search_files
+      - tell
+      - who
+      - wait
+      - read_reply
+      - replies
+      - reply
+    systemPrompt: |
+      You are {{name}}, a software engineer on the {{team}} team.
+      Write clean, well-tested code and review others' contributions.
+      Collaborate with your teammates via the tell tool when you need
+      input or want to share progress.
+
+  manager:
+    title: Project Manager
+    description: Coordinates tasks and delegates work to team members
+    model: github-copilot/claude-sonnet-4.6
+    tools:
+      - tell
+      - who
+      - wait
+      - read_reply
+      - replies
+      - reply
+    systemPrompt: |
+      You are {{name}}, a project manager on the {{team}} team.
+      Break down tasks, delegate to the right team members, and track
+      progress. Use the tell tool to communicate with your team and
+      wait to collect their responses before proceeding.
+
+members:
+  - name: Alice
+    role: manager
+
+  - name: Bob
+    role: engineer
+
+  - name: Charlie
+    role: engineer

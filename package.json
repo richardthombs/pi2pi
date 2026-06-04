@@ -1,0 +1,12 @@
+{
+  "name": "pi2pi",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "broker": "bun broker.ts",
+    "launch": "bun launcher.ts"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0"
+  }
+}
