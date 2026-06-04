@@ -106,7 +106,7 @@ function buildCommand(member: Member, role: Role): string {
 		args.push("--tools", role.tools.join(","));
 	}
 
-	return args.map(shellEsc).join(" ");
+	return "clear && " + args.map(shellEsc).join(" ");
 }
 
 // ── Validate members ──────────────────────────────────────────────────────────
@@ -139,20 +139,32 @@ console.log(`Launching team "${team.name}" (${commands.length} agents)...`);
 
 if (cmuxRunning) {
 	// ── cmux ─────────────────────────────────────────────────────────────────
-	// Build a single workspace with one pane per agent using the --layout flag.
-	// The layout JSON is a recursive binary split tree.
+	// Build a single workspace: first agent occupies the full left half,
+	// remaining agents are stacked vertically in the right half.
 	type LayoutNode =
 		| { pane: { surfaces: [{ type: "terminal"; command: string }] } }
-		| { direction: "horizontal"; split: number; children: [LayoutNode, LayoutNode] };
+		| { direction: "horizontal" | "vertical"; split: number; children: [LayoutNode, LayoutNode] };
+
+	function pane(cmd: string): LayoutNode {
+		return { pane: { surfaces: [{ type: "terminal", command: cmd }] } };
+	}
+
+	function verticalStack(cmds: string[]): LayoutNode {
+		if (cmds.length === 1) return pane(cmds[0]);
+		return {
+			direction: "vertical",
+			split: 1 / cmds.length,
+			children: [pane(cmds[0]), verticalStack(cmds.slice(1))],
+		};
+	}
 
 	function buildLayout(cmds: string[]): LayoutNode {
-		if (cmds.length === 1) {
-			return { pane: { surfaces: [{ type: "terminal", command: cmds[0] }] } };
-		}
+		if (cmds.length === 1) return pane(cmds[0]);
+		const [first, ...rest] = cmds;
 		return {
 			direction: "horizontal",
-			split: 1 / cmds.length,
-			children: [{ pane: { surfaces: [{ type: "terminal", command: cmds[0] }] } }, buildLayout(cmds.slice(1))],
+			split: 0.5,
+			children: [pane(first), verticalStack(rest)],
 		};
 	}
 
