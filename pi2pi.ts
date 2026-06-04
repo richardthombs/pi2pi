@@ -69,6 +69,21 @@ export default function (pi: ExtensionAPI) {
 	// Outgoing messages still awaiting a reply: id → { to, message, sentAt }
 	const pendingOutgoing = new Map<string, { to: string; message: string; sentAt: Date }>();
 
+	// Delivery confirmations: resolves silently on timeout, rejects immediately on broker error.
+	const pendingDelivery = new Map<string, { reject: (reason: string) => void; resolve: () => void }>();
+
+	// Full history of sent messages (capped at MAX_SENT_HISTORY, oldest dropped first).
+	const MAX_SENT_HISTORY = 100;
+	type SentEntry = { id: string; to: string; message: string; sentAt: Date; repliedAt?: Date };
+	const sentHistory = new Map<string, SentEntry>();
+
+	function addToHistory(id: string, to: string, message: string) {
+		sentHistory.set(id, { id, to, message, sentAt: new Date() });
+		if (sentHistory.size > MAX_SENT_HISTORY) {
+			sentHistory.delete(sentHistory.keys().next().value!);
+		}
+	}
+
 	// Latest online agent list from the broker
 	let onlineAgents: string[] = [];
 
@@ -110,20 +125,27 @@ export default function (pi: ExtensionAPI) {
 		return box;
 	});
 
-	// "⏳ Pending replies ..." — shown by /replies command
+	// "📨 Sent messages" — shown by /replies command
 	pi.registerMessageRenderer("pi2pi-pending", (message, _options, theme) => {
-		const details = message.details as { pending: Array<{ to: string; message: string; sentAt: string }> } | undefined;
-		const pending = details?.pending ?? [];
+		const details = message.details as { messages: Array<{ id: string; to: string; message: string; sentAt: string; repliedAt?: string }> } | undefined;
+		const messages = details?.messages ?? [];
 		const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
-		if (pending.length === 0) {
-			box.addChild(new Text(theme.fg("muted", "No pending messages — all replies have been received."), 0, 0));
+		if (messages.length === 0) {
+			box.addChild(new Text(theme.fg("muted", "No messages sent yet."), 0, 0));
 		} else {
-			const header = theme.fg("accent", `⏳ Pending replies (${pending.length})`) + "\n";
-			const lines = pending.map(
-				(p) =>
+			const header = theme.fg("accent", `📨 Sent messages (${messages.length})`) + "\n";
+			const lines = messages.map((p) => {
+				const status = p.repliedAt ? theme.fg("success", "✓") : theme.fg("warning", "⏳");
+				const time = p.repliedAt
+					? theme.fg("muted", `replied ${new Date(p.repliedAt).toLocaleTimeString()}`)
+					: theme.fg("muted", `sent ${new Date(p.sentAt).toLocaleTimeString()}`);
+				return status + " " +
 					theme.fg("accent", p.to) +
-					theme.fg("muted", ` — "${p.message}" (sent ${new Date(p.sentAt).toLocaleTimeString()})`),
-			);
+					theme.fg("dim", ` [id: ${p.id}]`) +
+					theme.fg("muted", ` — "${p.message}" (`) +
+					time +
+					theme.fg("muted", ")");
+			});
 			box.addChild(new Text(header + lines.join("\n"), 0, 0));
 		}
 		return box;
@@ -264,6 +286,8 @@ export default function (pi: ExtensionAPI) {
 			case "reply_result": {
 				if (!id || !from || content === undefined) return;
 				pendingOutgoing.delete(id);
+				const histEntry = sentHistory.get(id);
+				if (histEntry) histEntry.repliedAt = new Date();
 				refreshStatus();
 
 				// Inject the reply as a follow-up turn so the LLM sees it automatically,
@@ -283,6 +307,9 @@ export default function (pi: ExtensionAPI) {
 				notify(`Broker error${forId}: ${reason ?? "unknown"}`, "error");
 
 				if (id) {
+					// Reject the delivery promise so the tell tool throws immediately.
+					pendingDelivery.get(id)?.reject(reason ?? "unknown error");
+					pendingDelivery.delete(id);
 					pendingOutgoing.delete(id);
 					refreshStatus();
 				}
@@ -328,6 +355,8 @@ export default function (pi: ExtensionAPI) {
 		agentRoom = null;
 		incomingQueue.clear();
 		pendingOutgoing.clear();
+		pendingDelivery.clear();
+		sentHistory.clear();
 		onlineAgents = [];
 		if (ws) {
 			try {
@@ -379,14 +408,41 @@ export default function (pi: ExtensionAPI) {
 
 			if (targets.length === 0) throw new Error("Pi2Pi: no other agents are connected");
 
+			// Send each message and register a short-lived delivery promise.
+			// The promise rejects immediately if the broker returns an error (e.g. unknown
+			// agent name), or resolves silently after a timeout, after which the actual
+			// reply will arrive asynchronously as a follow-up message.
+			const DELIVERY_TIMEOUT_MS = 2000;
+			const sent: { target: string; msgId: string }[] = [];
+			const deliveryPromises: Promise<void>[] = [];
+
 			for (const target of targets) {
 				const msgId = randomUUID();
+				sent.push({ target, msgId });
 				pendingOutgoing.set(msgId, { to: target, message: params.message, sentAt: new Date() });
+				addToHistory(msgId, target, params.message);
 				ws!.send(JSON.stringify({ type: "message", id: msgId, to: target, content: params.message }));
+
+				deliveryPromises.push(new Promise<void>((resolve, reject) => {
+					pendingDelivery.set(msgId, { resolve, reject });
+					setTimeout(() => {
+						if (pendingDelivery.has(msgId)) {
+							pendingDelivery.delete(msgId);
+							resolve();
+						}
+					}, DELIVERY_TIMEOUT_MS);
+				}));
 			}
 			refreshStatus();
 
-			const targetList = targets.join(", ");
+			const results = await Promise.allSettled(deliveryPromises);
+			const failures = results
+				.map((r, i) => r.status === "rejected" ? `${sent[i].target}: ${r.reason}` : null)
+				.filter(Boolean) as string[];
+
+			if (failures.length > 0) throw new Error(failures.join("; "));
+
+			const targetList = sent.map(({ target, msgId }) => `${target} [id: ${msgId}]`).join(", ");
 			return {
 				content: [{
 					type: "text",
@@ -400,23 +456,26 @@ export default function (pi: ExtensionAPI) {
 		name: "replies",
 		label: "Replies",
 		description:
-			"Show messages you have sent that are still awaiting a reply. " +
-			"Replies arrive automatically in your conversation — you do not need to call this to receive them. " +
-			"Use it only to check what is still outstanding.",
-		promptSnippet: "Check which messages are still awaiting a reply from other agents",
+			"Show all messages you have sent, with their status (replied or awaiting reply). " +
+			"Replies arrive automatically in your conversation — you do not need to call this to receive them.",
+		promptSnippet: "Show all sent messages and whether replies have been received",
 		parameters: Type.Object({}),
 		async execute() {
 			if (!agentName) throw new Error("Pi2Pi: not connected");
-			if (pendingOutgoing.size === 0) {
-				return { content: [{ type: "text", text: "No pending messages — all replies have been received." }] };
+			if (sentHistory.size === 0) {
+				return { content: [{ type: "text", text: "No messages sent yet." }] };
 			}
-			const lines = [...pendingOutgoing.values()].map(
-				(p) => `${p.to}: "${p.message}" (sent ${p.sentAt.toLocaleTimeString()})`,
-			);
+			const lines = [...sentHistory.values()].reverse().map((p) => {
+				const status = p.repliedAt ? "✓" : "⏳";
+				const time = p.repliedAt
+					? `replied ${p.repliedAt.toLocaleTimeString()}`
+					: `sent ${p.sentAt.toLocaleTimeString()}`;
+				return `${status} ${p.to} [id: ${p.id}] — "${p.message}" (${time})`;
+			});
 			return {
 				content: [{
 					type: "text",
-					text: `Pending replies (${pendingOutgoing.size}):\n${lines.join("\n")}`,
+					text: `Sent messages (${sentHistory.size}):\n${lines.join("\n")}`,
 				}],
 			};
 		},
@@ -533,6 +592,7 @@ export default function (pi: ExtensionAPI) {
 				for (const target of targets) {
 					const msgId = randomUUID();
 					pendingOutgoing.set(msgId, { to: target, message: content, sentAt: new Date() });
+					addToHistory(msgId, target, content);
 					ws!.send(JSON.stringify({ type: "message", id: msgId, to: target, content }));
 				}
 			} else {
@@ -544,6 +604,7 @@ export default function (pi: ExtensionAPI) {
 
 				const msgId = randomUUID();
 				pendingOutgoing.set(msgId, { to: targetName, message: content, sentAt: new Date() });
+				addToHistory(msgId, targetName, content);
 
 				pi.sendMessage({
 					customType: "pi2pi-sent",
@@ -589,20 +650,22 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("replies", {
-		description: "Show messages still awaiting a reply (replies arrive automatically when they come in)",
+		description: "Show all sent messages with their status (replied or awaiting reply)",
 		handler: async (_args, _ctx) => {
-			const pending = [...pendingOutgoing.values()].map((p) => ({
+			const messages = [...sentHistory.values()].reverse().map((p) => ({
+				id: p.id,
 				to: p.to,
 				message: p.message,
 				sentAt: p.sentAt.toISOString(),
+				repliedAt: p.repliedAt?.toISOString(),
 			}));
 			pi.sendMessage({
 				customType: "pi2pi-pending",
-				content: pending.length
-					? pending.map((p) => `${p.to}: "${p.message}"`).join("\n")
-					: "No pending messages.",
+				content: messages.length
+					? messages.map((p) => `${p.repliedAt ? "✓" : "⏳"} ${p.to} [id: ${p.id}] — "${p.message}"`).join("\n")
+					: "No messages sent yet.",
 				display: true,
-				details: { pending },
+				details: { messages },
 			});
 		},
 	});
