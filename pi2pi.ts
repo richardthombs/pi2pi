@@ -243,7 +243,7 @@ export default function (pi: ExtensionAPI) {
 
 			// ── Incoming message from another agent ──────────────────────────
 			case "incoming": {
-				if (!id || !from || !content) return;
+				if (!id || !from || content === undefined) return;
 
 				// Enqueue so agent_end can correlate each reply turn with the right message id.
 				enqueueIncoming(id, from);
@@ -262,7 +262,7 @@ export default function (pi: ExtensionAPI) {
 
 			// ── Reply came back for one of our outgoing messages ─────────────
 			case "reply_result": {
-				if (!id || !from || !content) return;
+				if (!id || !from || content === undefined) return;
 				pendingOutgoing.delete(id);
 				refreshStatus();
 

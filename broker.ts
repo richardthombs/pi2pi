@@ -35,8 +35,10 @@ type AgentData = { name: string | null; room: string | null };
 // Keyed by "room/name"
 const agents = new Map<string, ServerWebSocket<AgentData>>();
 
-// Keyed by message id → { originator ws, targetName }
-const pendingReplies = new Map<string, { originator: ServerWebSocket<AgentData>; targetName: string }>();
+// Keyed by message id → { originatorName, originatorRoom, targetName }
+// Stored by name rather than WebSocket reference so that replies are still
+// routable if the originator disconnects and reconnects before the target replies.
+const pendingReplies = new Map<string, { originatorName: string; originatorRoom: string; targetName: string }>();
 
 function agentKey(room: string, name: string) {
 	return `${room}/${name}`;
@@ -317,9 +319,9 @@ Bun.serve<AgentData>({
 						return;
 					}
 
-					pendingReplies.set(id, { originator: ws, targetName: to });
+					pendingReplies.set(id, { originatorName: fromName, originatorRoom: fromRoom, targetName: to });
 					send(target, { type: "incoming", id, from: fromName, content });
-					log(`[${fromRoom}] "${fromName}" → "${to}": ${String(content).slice(0, 80)}`);
+					log(`[${fromRoom}] "${fromName}" → "${to}" [${id}]: ${String(content).slice(0, 80)}`);
 					break;
 				}
 
@@ -341,9 +343,18 @@ Bun.serve<AgentData>({
 						return;
 					}
 
+					// Look up the originator's *current* WebSocket — they may have reconnected
+					// since the message was sent, so we route by name rather than a cached socket.
+					const originatorWs = agents.get(agentKey(pending.originatorRoom, pending.originatorName));
+					if (!originatorWs) {
+						send(ws, { type: "error", id, reason: `Originator "${pending.originatorName}" is no longer connected` });
+						pendingReplies.delete(id);
+						return;
+					}
+
 					pendingReplies.delete(id);
-					send(pending.originator, { type: "reply_result", id, from: fromName, content });
-					log(`[${ws.data.room}] "${fromName}" replied to ${id}: ${String(content).slice(0, 80)}`);
+					send(originatorWs, { type: "reply_result", id, from: fromName, content });
+					log(`[${ws.data.room}] "${fromName}" → "${pending.originatorName}" reply [${id}]: ${String(content).slice(0, 80)}`);
 					break;
 				}
 
@@ -359,14 +370,15 @@ Bun.serve<AgentData>({
 				agents.delete(agentKey(room, name));
 
 				// Clean up pending replies involving this agent.
-				// If this agent was the target: notify the originator it will never reply.
-				// If this agent was the originator: remove the entry to avoid a memory leak
-				// (the eventual reply_result send would silently fail anyway).
-				for (const [msgId, { originator, targetName }] of pendingReplies) {
-					if (targetName === name) {
-						send(originator, { type: "error", id: msgId, reason: `Agent "${name}" disconnected before replying` });
-						pendingReplies.delete(msgId);
-					} else if (originator === ws) {
+				// If this agent was the target: notify the originator (if still online) and drop the entry.
+				// If this agent was the originator: keep the entry — they may reconnect and the
+				// reply will be routed to their new socket when it arrives.
+				for (const [msgId, { originatorName, originatorRoom, targetName }] of pendingReplies) {
+					if (targetName === name && room === ws.data.room) {
+						const originatorWs = agents.get(agentKey(originatorRoom, originatorName));
+						if (originatorWs) {
+							send(originatorWs, { type: "error", id: msgId, reason: `Agent "${name}" disconnected before replying` });
+						}
 						pendingReplies.delete(msgId);
 					}
 				}
