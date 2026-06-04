@@ -84,6 +84,13 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	// Buffer of received replies not yet consumed by read/wait.
+	type ReplyEntry = { id: string; from: string; content: string; receivedAt: Date; claimed: boolean };
+	const replyBuffer = new Map<string, ReplyEntry>();
+
+	// Resolvers registered by the wait tool, keyed by message id.
+	const replyWaiters = new Map<string, () => void>();
+
 	// Latest online agent list from the broker
 	let onlineAgents: string[] = [];
 
@@ -290,14 +297,16 @@ export default function (pi: ExtensionAPI) {
 				if (histEntry) histEntry.repliedAt = new Date();
 				refreshStatus();
 
-				// Inject the reply as a follow-up turn so the LLM sees it automatically,
-				// regardless of what else the agent is doing at the time.
-				pi.sendMessage({
-					customType: "pi2pi-reply",
-					content: `[Incoming message received from ${from}]\n${from}: ${content}`,
-					display: true,
-					details: { from, full: content },
-				}, { triggerTurn: true, deliverAs: "followUp" });
+				// Store in buffer. Delivery to the LLM happens either via the read tool
+				// (claimed explicitly) or via the agent_end flush (unclaimed).
+				replyBuffer.set(id, { id, from, content, receivedAt: new Date(), claimed: false });
+
+				// Signal any wait tool that is blocking on this id.
+				const waiter = replyWaiters.get(id);
+				if (waiter) {
+					replyWaiters.delete(id);
+					waiter();
+				}
 				break;
 			}
 
@@ -357,6 +366,10 @@ export default function (pi: ExtensionAPI) {
 		pendingOutgoing.clear();
 		pendingDelivery.clear();
 		sentHistory.clear();
+		replyBuffer.clear();
+		// Reject any in-flight wait calls so they don't hang forever.
+		for (const resolve of replyWaiters.values()) resolve(); // resolving is safe; wait checks buffer
+		replyWaiters.clear();
 		onlineAgents = [];
 		if (ws) {
 			try {
@@ -367,6 +380,23 @@ export default function (pi: ExtensionAPI) {
 	});
 
 
+
+	// ── Flush unclaimed replies at the end of each agent turn ────────────────
+	// Replies are always buffered first. If the agent used wait+read they will
+	// have been claimed already. Any that weren't are injected here as follow-up
+	// turns so the agent still sees them on the next turn.
+	pi.on("agent_end", async () => {
+		for (const [id, entry] of replyBuffer) {
+			replyBuffer.delete(id);
+			if (entry.claimed) continue;
+			pi.sendMessage({
+				customType: "pi2pi-reply",
+				content: `[Incoming message received from ${entry.from}, id: ${entry.id}]\n${entry.from}: ${entry.content}`,
+				display: true,
+				details: { from: entry.from, full: entry.content },
+			}, { triggerTurn: true, deliverAs: "followUp" });
+		}
+	});
 
 	// ── Tools (callable by the LLM) ───────────────────────────────────────────
 
@@ -476,6 +506,65 @@ export default function (pi: ExtensionAPI) {
 				content: [{
 					type: "text",
 					text: `Sent messages (${sentHistory.size}):\n${lines.join("\n")}`,
+				}],
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "wait",
+		label: "Wait",
+		description:
+			"Wait for replies to arrive for one or more sent messages. " +
+			"Blocks until all specified replies have been received or the timeout is reached. " +
+			"Use the read tool afterwards to retrieve the reply content.",
+		promptSnippet: "Wait for replies to specific sent messages before proceeding",
+		parameters: Type.Object({
+			ids: Type.Array(Type.String(), { description: "Message ids to wait for" }),
+			timeout: Type.Optional(Type.Number({ description: "Timeout in milliseconds (default: 30000)" })),
+		}),
+		async execute(_toolCallId, params) {
+			const timeout = params.timeout ?? 30000;
+			const promises = params.ids.map((id) => {
+				if (replyBuffer.has(id)) return Promise.resolve();
+				return new Promise<void>((resolve, reject) => {
+					replyWaiters.set(id, resolve);
+					setTimeout(() => {
+						if (replyWaiters.has(id)) {
+							replyWaiters.delete(id);
+							reject(new Error(`Timeout waiting for reply to ${id}`));
+						}
+					}, timeout);
+				});
+			});
+			const results = await Promise.allSettled(promises);
+			const timedOut = results
+				.map((r, i) => r.status === "rejected" ? params.ids[i] : null)
+				.filter(Boolean) as string[];
+			if (timedOut.length > 0) throw new Error(`Timed out waiting for replies to: ${timedOut.join(", ")}`);
+			return { content: [{ type: "text", text: `All ${params.ids.length} ${params.ids.length === 1 ? "reply" : "replies"} received. Use the read tool to retrieve ${params.ids.length === 1 ? "it" : "them"}.` }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "read",
+		label: "Read",
+		description:
+			"Read the reply for a specific sent message. " +
+			"The reply is removed from the queue so it will not be delivered again as a follow-up message. " +
+			"Call wait first to ensure the reply has arrived.",
+		promptSnippet: "Read the reply for a specific sent message",
+		parameters: Type.Object({
+			id: Type.String({ description: "The message id to read the reply for" }),
+		}),
+		async execute(_toolCallId, params) {
+			const entry = replyBuffer.get(params.id);
+			if (!entry) throw new Error(`No reply available for id ${params.id} — has it arrived yet? Use the wait tool first.`);
+			entry.claimed = true;
+			return {
+				content: [{
+					type: "text",
+					text: `[Incoming message received from ${entry.from}, id: ${entry.id}]\n${entry.from}: ${entry.content}`,
 				}],
 			};
 		},
