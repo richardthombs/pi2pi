@@ -369,6 +369,8 @@ export default function (pi: ExtensionAPI) {
 			let content = theme.fg("muted", "Asked ") + theme.fg("accent", args.to);
 			if (context.expanded) {
 				content += theme.fg("muted", ": ") + theme.fg("dim", args.message);
+			} else {
+				content += theme.fg("muted", "…");
 			}
 			t.setText(content);
 			return t;
