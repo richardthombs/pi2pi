@@ -385,7 +385,7 @@ export default function (pi: ExtensionAPI) {
 			return {
 				content: [{
 					type: "text",
-					text: `Message sent to ${targetList}. The reply will arrive automatically when ready — carry on with other work.`,
+					text: `Message sent to ${targetList}.`,
 				}],
 			};
 		},
