@@ -244,7 +244,7 @@ export default function (pi: ExtensionAPI) {
 				// deliverAs followUp ensures messages are processed in arrival order.
 				pi.sendMessage({
 					customType: "pi2pi-incoming",
-					content: `Message from ${from}: ${content}`,
+					content: `Message from ${from}: ${content}\n\nUse the reply tool to send your response.`,
 					display: true,
 					details: { from, message: content },
 				}, { triggerTurn: true, deliverAs: "followUp" });
@@ -328,27 +328,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("agent_end", async (event) => {
-		// If this turn was a response to an incoming inter-agent message, send the reply
-		const incoming = incomingQueue.shift();
-		if (!incoming) return;
 
-		const { id, from } = incoming;
-
-		if (!ws || ws.readyState !== WebSocket.OPEN) {
-			notify("Pi2Pi: lost broker connection while preparing reply", "warning");
-			return;
-		}
-
-		const replyText = extractLastAssistantText(event.messages);
-		ws.send(
-			JSON.stringify({
-				type: "reply",
-				id,
-				content: replyText ?? "(no response)",
-			}),
-		);
-	});
 
 	// ── Tools (callable by the LLM) ───────────────────────────────────────────
 
@@ -430,6 +410,40 @@ export default function (pi: ExtensionAPI) {
 					text: `Pending replies (${pendingOutgoing.size}):\n${lines.join("\n")}`,
 				}],
 			};
+		},
+	});
+
+	pi.registerTool({
+		name: "reply",
+		label: "Reply",
+		description: "Send a reply to the most recent incoming message from another agent. Always use this tool to respond — do not just write a response in plain text.",
+		promptSnippet: "Reply to an incoming message from another agent",
+		parameters: Type.Object({
+			content: Type.String({ description: "The reply to send back" }),
+		}),
+		renderCall(args, theme, context) {
+			const t = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const incoming = incomingQueue[0];
+			const to = incoming?.from ?? "?";
+			let content = theme.fg("muted", "Replied to ") + theme.fg("accent", to);
+			if (context.expanded) {
+				content += theme.fg("muted", ": ") + theme.fg("dim", args.content);
+			} else {
+				content += theme.fg("muted", "…");
+			}
+			t.setText(content);
+			return t;
+		},
+		renderResult(_result, _options, theme) {
+			return new Text(theme.fg("muted", "✓"), 0, 0);
+		},
+		async execute(_toolCallId, params) {
+			if (!agentName) throw new Error("Pi2Pi: not connected");
+			if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("Pi2Pi: not connected to broker");
+			const incoming = incomingQueue.shift();
+			if (!incoming) throw new Error("Pi2Pi: no incoming message to reply to");
+			ws.send(JSON.stringify({ type: "reply", id: incoming.id, content: params.content }));
+			return { content: [{ type: "text", text: `Reply sent to ${incoming.from}.` }] };
 		},
 	});
 
@@ -533,6 +547,30 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			refreshStatus();
+		},
+	});
+
+	pi.registerCommand("reply", {
+		description: "Send a reply to the most recent incoming message. Usage: /reply <content>",
+		handler: async (args, ctx) => {
+			if (!ws || ws.readyState !== WebSocket.OPEN) {
+				ctx.ui.notify("Pi2Pi: not connected to broker", "error");
+				return;
+			}
+			const incoming = incomingQueue.shift();
+			if (!incoming) {
+				ctx.ui.notify("Pi2Pi: no incoming message to reply to", "warning");
+				return;
+			}
+			const content = args.trim();
+			if (!content) {
+				ctx.ui.notify("Usage: /reply <content>", "warning");
+				// Put it back
+				incomingQueue.unshift(incoming);
+				return;
+			}
+			ws.send(JSON.stringify({ type: "reply", id: incoming.id, content }));
+			ctx.ui.notify(`Reply sent to ${incoming.from}.`, "success");
 		},
 	});
 
