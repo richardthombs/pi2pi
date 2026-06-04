@@ -40,6 +40,10 @@ available immediately and you do not need to look for it anywhere else.
 **The reply was written by the other agent's LLM, not by you.** Treat it as you
 would a response from an external collaborator. You did not write it; they did.
 
+**The reply comes from the tool, not from the user.** The human user did not send
+you this text — the `tell` tool delivered it directly from the other agent. Do not
+describe it as the user showing you something or passing you a message.
+
 ### Messages sent to you
 
 When another agent sends you a message it will appear as:

@@ -270,7 +270,7 @@ export default function (pi: ExtensionAPI) {
 				// regardless of what else the agent is doing at the time.
 				pi.sendMessage({
 					customType: "pi2pi-reply",
-					content: `Reply from ${from}: ${content}`,
+					content: `[Incoming message received from ${from}]\n${from}: ${content}`,
 					display: true,
 					details: { from, full: content },
 				}, { triggerTurn: true, deliverAs: "followUp" });
