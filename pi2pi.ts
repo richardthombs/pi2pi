@@ -91,6 +91,10 @@ export default function (pi: ExtensionAPI) {
 	// Resolvers registered by the wait tool, keyed by message id.
 	const replyWaiters = new Map<string, () => void>();
 
+	// True while an agent turn is in progress; used to decide whether to inject
+	// replies immediately or wait for the agent_end flush.
+	let agentTurnActive = false;
+
 	// Latest online agent list from the broker
 	let onlineAgents: string[] = [];
 
@@ -298,14 +302,28 @@ export default function (pi: ExtensionAPI) {
 				refreshStatus();
 
 				// Store in buffer. Delivery to the LLM happens either via the read tool
-				// (claimed explicitly) or via the agent_end flush (unclaimed).
-				replyBuffer.set(id, { id, from, content, receivedAt: new Date(), claimed: false });
+				// (claimed explicitly), the agent_end flush (unclaimed, turn active),
+				// or immediately if no turn is currently active.
+				const entry: ReplyEntry = { id, from, content, receivedAt: new Date(), claimed: false };
 
 				// Signal any wait tool that is blocking on this id.
 				const waiter = replyWaiters.get(id);
 				if (waiter) {
 					replyWaiters.delete(id);
+					replyBuffer.set(id, entry);
 					waiter();
+				} else if (!agentTurnActive) {
+					// Agent is idle — inject immediately so it doesn't wait for a
+					// user message to trigger the next agent_end flush.
+					entry.claimed = true;
+					pi.sendMessage({
+						customType: "pi2pi-reply",
+						content: `[Incoming message received from ${from}, id: ${id}]\n${from}: ${content}`,
+						display: true,
+						details: { from, full: content },
+					}, { triggerTurn: true, deliverAs: "followUp" });
+				} else {
+					replyBuffer.set(id, entry);
 				}
 				break;
 			}
@@ -385,7 +403,10 @@ export default function (pi: ExtensionAPI) {
 	// Replies are always buffered first. If the agent used wait+read they will
 	// have been claimed already. Any that weren't are injected here as follow-up
 	// turns so the agent still sees them on the next turn.
+	pi.on("agent_start", async () => { agentTurnActive = true; });
+
 	pi.on("agent_end", async () => {
+		agentTurnActive = false;
 		for (const [id, entry] of replyBuffer) {
 			replyBuffer.delete(id);
 			if (entry.claimed) continue;
