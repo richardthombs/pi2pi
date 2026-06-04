@@ -53,9 +53,23 @@ export default function (pi: ExtensionAPI) {
 	let uiNotify: ((msg: string, level: "info" | "warning" | "error" | "success") => void) | null = null;
 	let uiSetStatus: ((id: string, text: string | undefined) => void) | null = null;
 
-	// Queue of incoming inter-agent messages waiting for a reply turn.
-	// Pushed when the broker delivers "incoming", shifted in agent_end after each reply turn.
-	const incomingQueue: Array<{ id: string; from: string }> = [];
+	// Incoming messages awaiting a reply, keyed by sender name.
+	// If the same sender sends multiple messages before any are answered,
+	// they are stored as a queue per sender (FIFO within each sender).
+	const incomingQueue = new Map<string, Array<{ id: string; from: string }>>();
+
+	function enqueueIncoming(id: string, from: string) {
+		if (!incomingQueue.has(from)) incomingQueue.set(from, []);
+		incomingQueue.get(from)!.push({ id, from });
+	}
+
+	function dequeueIncoming(from: string): { id: string; from: string } | undefined {
+		const q = incomingQueue.get(from);
+		if (!q || q.length === 0) return undefined;
+		const item = q.shift()!;
+		if (q.length === 0) incomingQueue.delete(from);
+		return item;
+	}
 
 	// Outgoing messages still awaiting a reply: id → { to, message, sentAt }
 	const pendingOutgoing = new Map<string, { to: string; message: string; sentAt: Date }>();
@@ -237,14 +251,14 @@ export default function (pi: ExtensionAPI) {
 				if (!id || !from || !content) return;
 
 				// Enqueue so agent_end can correlate each reply turn with the right message id.
-				incomingQueue.push({ id, from });
+				enqueueIncoming(id, from);
 
 				// Use sendMessage (not sendUserMessage) so the styled pi2pi-incoming renderer
 				// is used. triggerTurn starts an agent turn so the LLM generates a reply.
 				// deliverAs followUp ensures messages are processed in arrival order.
 				pi.sendMessage({
 					customType: "pi2pi-incoming",
-					content: `Message from ${from}: ${content}\n\nUse the reply tool to send your response.`,
+					content: `Message from ${from}: ${content}\n\nUse the reply tool with to="${from}" to send your response.`,
 					display: true,
 					details: { from, message: content },
 				}, { triggerTurn: true, deliverAs: "followUp" });
@@ -317,7 +331,7 @@ export default function (pi: ExtensionAPI) {
 		uiSetStatus = null;
 		agentName = null;
 		agentRoom = null;
-		incomingQueue.length = 0;
+		incomingQueue.clear();
 		pendingOutgoing.clear();
 		onlineAgents = [];
 		if (ws) {
@@ -416,16 +430,16 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "reply",
 		label: "Reply",
-		description: "Send a reply to the most recent incoming message from another agent. Always use this tool to respond — do not just write a response in plain text.",
+		description: "Send a reply to a specific agent who sent you an incoming message. Always use this tool to respond — do not just write a response in plain text.",
 		promptSnippet: "Reply to an incoming message from another agent",
 		parameters: Type.Object({
+			to: Type.String({ description: "Name of the agent to reply to" }),
 			content: Type.String({ description: "The reply to send back" }),
 		}),
 		renderCall(args, theme, context) {
 			const t = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			const incoming = incomingQueue[0];
-			const to = incoming?.from ?? "?";
-			let content = theme.fg("muted", "Replied to ") + theme.fg("accent", to);
+			const pendingFrom = args.to as string | undefined;
+			let content = theme.fg("muted", "Replied to ") + theme.fg("accent", pendingFrom ?? "?");
 			if (context.expanded) {
 				content += theme.fg("muted", ": ") + theme.fg("dim", args.content);
 			} else {
@@ -440,8 +454,8 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 			if (!agentName) throw new Error("Pi2Pi: not connected");
 			if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("Pi2Pi: not connected to broker");
-			const incoming = incomingQueue.shift();
-			if (!incoming) throw new Error("Pi2Pi: no incoming message to reply to");
+			const incoming = dequeueIncoming(params.to);
+			if (!incoming) throw new Error(`Pi2Pi: no pending message from ${params.to}`);
 			ws.send(JSON.stringify({ type: "reply", id: incoming.id, content: params.content }));
 			return { content: [{ type: "text", text: `Reply sent to ${incoming.from}.` }] };
 		},
@@ -557,16 +571,21 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("Pi2Pi: not connected to broker", "error");
 				return;
 			}
-			const incoming = incomingQueue.shift();
-			if (!incoming) {
-				ctx.ui.notify("Pi2Pi: no incoming message to reply to", "warning");
+			const trimmed = args.trim();
+			const spaceIdx = trimmed.search(/\s+/);
+			if (spaceIdx === -1) {
+				ctx.ui.notify("Usage: /reply <name> <content>", "warning");
 				return;
 			}
-			const content = args.trim();
+			const targetName = trimmed.slice(0, spaceIdx);
+			const content = trimmed.slice(spaceIdx).trim();
 			if (!content) {
-				ctx.ui.notify("Usage: /reply <content>", "warning");
-				// Put it back
-				incomingQueue.unshift(incoming);
+				ctx.ui.notify("Usage: /reply <name> <content>", "warning");
+				return;
+			}
+			const incoming = dequeueIncoming(targetName);
+			if (!incoming) {
+				ctx.ui.notify(`Pi2Pi: no pending message from ${targetName}`, "warning");
 				return;
 			}
 			ws.send(JSON.stringify({ type: "reply", id: incoming.id, content }));
