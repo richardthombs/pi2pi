@@ -53,21 +53,16 @@ export default function (pi: ExtensionAPI) {
 	let uiNotify: ((msg: string, level: "info" | "warning" | "error" | "success") => void) | null = null;
 	let uiSetStatus: ((id: string, text: string | undefined) => void) | null = null;
 
-	// Incoming messages awaiting a reply, keyed by sender name.
-	// If the same sender sends multiple messages before any are answered,
-	// they are stored as a queue per sender (FIFO within each sender).
-	const incomingQueue = new Map<string, Array<{ id: string; from: string }>>();
+	// Incoming messages awaiting a reply, keyed by message ID.
+	const incomingQueue = new Map<string, { id: string; from: string }>();
 
 	function enqueueIncoming(id: string, from: string) {
-		if (!incomingQueue.has(from)) incomingQueue.set(from, []);
-		incomingQueue.get(from)!.push({ id, from });
+		incomingQueue.set(id, { id, from });
 	}
 
-	function dequeueIncoming(from: string): { id: string; from: string } | undefined {
-		const q = incomingQueue.get(from);
-		if (!q || q.length === 0) return undefined;
-		const item = q.shift()!;
-		if (q.length === 0) incomingQueue.delete(from);
+	function dequeueIncoming(id: string): { id: string; from: string } | undefined {
+		const item = incomingQueue.get(id);
+		if (item) incomingQueue.delete(id);
 		return item;
 	}
 
@@ -258,7 +253,7 @@ export default function (pi: ExtensionAPI) {
 				// deliverAs followUp ensures messages are processed in arrival order.
 				pi.sendMessage({
 					customType: "pi2pi-incoming",
-					content: `Message from ${from}: ${content}\n\nUse the reply tool with to="${from}" to send your response.`,
+					content: `Message from ${from} [id: ${id}]: ${content}\n\nUse the reply tool with id="${id}" to send your response.`,
 					display: true,
 					details: { from, message: content },
 				}, { triggerTurn: true, deliverAs: "followUp" });
@@ -433,13 +428,13 @@ export default function (pi: ExtensionAPI) {
 		description: "Send a reply to a specific agent who sent you an incoming message. Always use this tool to respond — do not just write a response in plain text.",
 		promptSnippet: "Reply to an incoming message from another agent",
 		parameters: Type.Object({
-			to: Type.String({ description: "Name of the agent to reply to" }),
+			id: Type.String({ description: "The id of the incoming message to reply to" }),
 			content: Type.String({ description: "The reply to send back" }),
 		}),
 		renderCall(args, theme, context) {
 			const t = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			const pendingFrom = args.to as string | undefined;
-			let content = theme.fg("muted", "Replied to ") + theme.fg("accent", pendingFrom ?? "?");
+			const from = incomingQueue.get(args.id)?.from ?? args.id;
+			let content = theme.fg("muted", "Replied to ") + theme.fg("accent", from);
 			if (context.expanded) {
 				content += theme.fg("muted", ": ") + theme.fg("dim", args.content);
 			} else {
@@ -454,8 +449,8 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 			if (!agentName) throw new Error("Pi2Pi: not connected");
 			if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("Pi2Pi: not connected to broker");
-			const incoming = dequeueIncoming(params.to);
-			if (!incoming) throw new Error(`Pi2Pi: no pending message from ${params.to}`);
+			const incoming = dequeueIncoming(params.id);
+			if (!incoming) throw new Error(`Pi2Pi: no pending message with id ${params.id}`);
 			ws.send(JSON.stringify({ type: "reply", id: incoming.id, content: params.content }));
 			return { content: [{ type: "text", text: `Reply sent to ${incoming.from}.` }] };
 		},
@@ -574,18 +569,18 @@ export default function (pi: ExtensionAPI) {
 			const trimmed = args.trim();
 			const spaceIdx = trimmed.search(/\s+/);
 			if (spaceIdx === -1) {
-				ctx.ui.notify("Usage: /reply <name> <content>", "warning");
+				ctx.ui.notify("Usage: /reply <id> <content>", "warning");
 				return;
 			}
-			const targetName = trimmed.slice(0, spaceIdx);
+			const id = trimmed.slice(0, spaceIdx);
 			const content = trimmed.slice(spaceIdx).trim();
 			if (!content) {
-				ctx.ui.notify("Usage: /reply <name> <content>", "warning");
+				ctx.ui.notify("Usage: /reply <id> <content>", "warning");
 				return;
 			}
-			const incoming = dequeueIncoming(targetName);
+			const incoming = dequeueIncoming(id);
 			if (!incoming) {
-				ctx.ui.notify(`Pi2Pi: no pending message from ${targetName}`, "warning");
+				ctx.ui.notify(`Pi2Pi: no pending message with id ${id}`, "warning");
 				return;
 			}
 			ws.send(JSON.stringify({ type: "reply", id: incoming.id, content }));
