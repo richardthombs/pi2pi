@@ -364,6 +364,20 @@ export default function (pi: ExtensionAPI) {
 			to: Type.String({ description: 'Agent name to message, or "everyone" to broadcast to all connected agents' }),
 			message: Type.String({ description: "Message to send" }),
 		}),
+		renderCall(args, theme, context) {
+			const t = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			let content = theme.fg("muted", "Asked ") + theme.fg("accent", args.to);
+			if (context.expanded) {
+				content += theme.fg("muted", ": ") + theme.fg("dim", args.message);
+			}
+			t.setText(content);
+			return t;
+		},
+		renderResult(_result, _options, theme) {
+			// Visually suppress the result — the call row already shows everything.
+			// The tool result text is still present in the LLM context unchanged.
+			return new Text(theme.fg("muted", "✓"), 0, 0);
+		},
 		async execute(_toolCallId, params) {
 			if (!agentName) throw new Error("Pi2Pi: --agent-name flag is required");
 			if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("Pi2Pi: not connected to broker");
