@@ -45,8 +45,9 @@ Each instance shows a status indicator in the footer (e.g. `● Alice [Bob]`).
 
 | Command | Description |
 |---------|-------------|
-| `/tell Bob what is the capital of France?` | Send a message to Bob's LLM and receive his reply |
-| `/tell everyone introduce yourself briefly` | Broadcast to all connected agents; each replies individually |
+| `/tell Bob what is the capital of France?` | Send a message to Bob's LLM (fire-and-forget) |
+| `/tell everyone introduce yourself briefly` | Broadcast to all connected agents |
+| `/replies` | Show all replies received since you last checked |
 | `/who` | Show who is currently connected |
 
 Tab-completion works on the first argument of `/tell` — it offers `everyone` plus the names of online agents.
@@ -55,9 +56,10 @@ In Alice's session:
 ```
 /tell Bob what is 2 + 2?
 ```
-- Alice's conversation shows `📤 Bob: what is 2 + 2?`
-- Bob's LLM receives the message and answers it
-- Alice's conversation shows `💬 @Bob: 4` once the reply arrives
+- Alice's conversation shows the sent message and returns immediately
+- Bob's LLM receives the message and answers it in the background
+- Alice sees a notification when the reply arrives
+- Alice runs `/replies` (or the `replies` tool) to read it
 
 Bob's session shows the message as a user turn so he can see what was asked.
 
@@ -103,6 +105,15 @@ Alice sees: 💬 @Bob: <joke>
 ```
 
 For `/tell everyone`, the extension fans out one individual message per online agent.
+
+## Checking replies
+
+Replies from other agents are accumulated in a background list. Retrieve them with:
+
+- **`/replies`** — displays all pending replies in the TUI and clears them
+- **`replies` tool** — the LLM can call this to read and clear pending replies
+
+A notification is shown whenever a new reply arrives.
 
 ## Notes
 

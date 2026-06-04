@@ -60,9 +60,8 @@ export default function (pi: ExtensionAPI) {
 	// Outgoing messages we are waiting for a reply to: id → { to }
 	const pendingOutgoing = new Map<string, { to: string }>();
 
-	// Resolvers for tool-initiated messages: id → { resolve, reject }
-	// When a reply arrives for one of these, the tell tool's promise resolves.
-	const pendingToolReplies = new Map<string, { resolve: (content: string) => void; reject: (err: Error) => void }>();
+	// Replies received from other agents, accumulated until read
+	const arrivedReplies: Array<{ from: string; content: string; at: Date }> = [];
 
 	// Latest online agent list from the broker
 	let onlineAgents: string[] = [];
@@ -102,6 +101,22 @@ export default function (pi: ExtensionAPI) {
 		const label = theme.fg("accent", `${from}`) + theme.fg("muted", ": ");
 		const preview = full.length > 300 && !expanded ? full.slice(0, 300) + "…" : full;
 		box.addChild(new Text(label + preview, 0, 0));
+		return box;
+	});
+
+	// "/replies" list display
+	pi.registerMessageRenderer("pi2pi-replies", (message, _options, theme) => {
+		const details = message.details as { replies: Array<{ from: string; content: string; at: string }> } | undefined;
+		const replies = details?.replies ?? [];
+		const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
+		if (replies.length === 0) {
+			box.addChild(new Text(theme.fg("muted", "No replies yet."), 0, 0));
+		} else {
+			const lines = replies.map(
+				(r) => theme.fg("accent", r.from) + theme.fg("muted", " replied: ") + r.content,
+			);
+			box.addChild(new Text(lines.join("\n\n"), 0, 0));
+		}
 		return box;
 	});
 
@@ -242,22 +257,9 @@ export default function (pi: ExtensionAPI) {
 				pendingOutgoing.delete(id);
 				refreshStatus();
 
-				// If a tool is waiting for this reply, resolve its promise.
-				// The reply becomes the tool result — no separate styled message needed.
-				const toolReply = pendingToolReplies.get(id);
-				if (toolReply) {
-					pendingToolReplies.delete(id);
-					toolReply.resolve(content);
-					break;
-				}
-
-				// Command-initiated reply: show styled message and trigger a turn.
-				pi.sendMessage({
-					customType: "pi2pi-reply",
-					content: `Reply from ${from}: ${content}`,
-					display: true,
-					details: { from, full: content },
-				}, { triggerTurn: true, deliverAs: "followUp" });
+				// Accumulate the reply for later retrieval via the replies tool or /replies command.
+				arrivedReplies.push({ from, content, at: new Date() });
+				notify(`Reply from ${from} — use the replies tool or /replies to read it`, "info");
 				break;
 			}
 
@@ -269,11 +271,6 @@ export default function (pi: ExtensionAPI) {
 				if (id) {
 					pendingOutgoing.delete(id);
 					refreshStatus();
-					const toolReply = pendingToolReplies.get(id);
-					if (toolReply) {
-						pendingToolReplies.delete(id);
-						toolReply.reject(new Error(reason ?? "Unknown broker error"));
-					}
 				}
 				break;
 			}
@@ -317,10 +314,7 @@ export default function (pi: ExtensionAPI) {
 		agentRoom = null;
 		incomingQueue.length = 0;
 		pendingOutgoing.clear();
-		for (const { reject } of pendingToolReplies.values()) {
-			reject(new Error("Session shut down"));
-		}
-		pendingToolReplies.clear();
+		arrivedReplies.length = 0;
 		onlineAgents = [];
 		if (ws) {
 			try {
@@ -373,37 +367,31 @@ export default function (pi: ExtensionAPI) {
 
 			if (targets.length === 0) throw new Error("Pi2Pi: no other agents are connected");
 
-			onUpdate?.({ content: [{ type: "text", text: `Waiting for ${targets.length === 1 ? targets[0] : "all agents"} to reply…` }] });
-
-			const replies = await Promise.allSettled(
-				targets.map((target) =>
-					new Promise<{ target: string; reply: string }>((resolve, reject) => {
-						const msgId = randomUUID();
-						pendingOutgoing.set(msgId, { to: target });
-						pendingToolReplies.set(msgId, {
-							resolve: (content) => resolve({ target, reply: content }),
-							reject,
-						});
-						signal?.addEventListener("abort", () => {
-							pendingOutgoing.delete(msgId);
-							pendingToolReplies.delete(msgId);
-							reject(new Error("Cancelled"));
-						});
-						ws!.send(JSON.stringify({ type: "message", id: msgId, to: target, content: params.message }));
-						refreshStatus();
-					})
-				)
-			);
-
-			const lines: string[] = [];
-			for (const result of replies) {
-				if (result.status === "fulfilled") {
-					lines.push(`${result.value.target}: ${result.value.reply}`);
-				} else {
-					lines.push(`${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
-				}
+			for (const target of targets) {
+				const msgId = randomUUID();
+				pendingOutgoing.set(msgId, { to: target });
+				ws!.send(JSON.stringify({ type: "message", id: msgId, to: target, content: params.message }));
 			}
+			refreshStatus();
 
+			const targetList = targets.join(", ");
+			return { content: [{ type: "text", text: `Message sent to ${targetList}. Use the replies tool to check for responses when ready.` }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "replies",
+		label: "Replies",
+		description: "Check for replies from agents you have messaged. Returns all replies received since you last checked, then clears them.",
+		promptSnippet: "Check for replies from agents you have messaged",
+		parameters: Type.Object({}),
+		async execute() {
+			if (!agentName) throw new Error("Pi2Pi: not connected");
+			if (arrivedReplies.length === 0) {
+				return { content: [{ type: "text", text: "No replies received yet." }] };
+			}
+			const lines = arrivedReplies.map((r) => `${r.from}: ${r.content}`);
+			arrivedReplies.length = 0;
 			return { content: [{ type: "text", text: lines.join("\n\n") }] };
 		},
 	});
@@ -508,6 +496,20 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			refreshStatus();
+		},
+	});
+
+	pi.registerCommand("replies", {
+		description: "Show replies received from other agents",
+		handler: async (_args, _ctx) => {
+			const snapshot = arrivedReplies.map((r) => ({ from: r.from, content: r.content, at: r.at.toISOString() }));
+			arrivedReplies.length = 0;
+			pi.sendMessage({
+				customType: "pi2pi-replies",
+				content: snapshot.length ? snapshot.map((r) => `${r.from}: ${r.content}`).join("\n") : "No replies yet.",
+				display: true,
+				details: { replies: snapshot },
+			});
 		},
 	});
 
