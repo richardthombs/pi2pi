@@ -59,6 +59,12 @@ if (!existsSync(configFile)) {
 }
 
 const config = parse(readFileSync(configFile, "utf8")) as TeamConfig;
+
+if (!config || typeof config !== "object") {
+	console.error("team.name is required");
+	process.exit(1);
+}
+
 const { team, roles, members } = config;
 
 if (!team?.name) { console.error("team.name is required"); process.exit(1); }
