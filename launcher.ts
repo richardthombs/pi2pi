@@ -3,20 +3,22 @@
  * Pi2Pi Team Launcher
  *
  * Reads a team roster YAML file and launches one pi instance per member
- * in a tmux session, each with their role's model, system prompt, and
- * allowed tools.
+ * in a multiplexed terminal session.
  *
  * Usage:
  *   bun launcher.ts <team.yaml>
  *
- * Requires tmux. Each agent runs in its own named tmux window.
- * If already inside a tmux session, windows are added to the current session.
- * Otherwise a new tmux session named after the team is created and attached.
+ * Multiplexer precedence:
+ *   1. cmux  — if cmux is installed and running
+ *   2. tmux  — if tmux is installed (macOS / Linux)
+ *   3. wt    — Windows Terminal CLI (Windows native)
+ *   4. headless — background Bun.spawn processes (Windows fallback, no UI)
  */
 
 import { parse } from "yaml";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, writeFileSync } from "fs";
 import { resolve, join } from "path";
+import { tmpdir } from "node:os";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -79,13 +81,18 @@ function interpolate(template: string, vars: Record<string, string>): string {
 	return template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
 }
 
-/** Shell-escape a single argument (single-quote wrapping). */
+/** Shell-escape a single argument for Unix shells (single-quote wrapping). */
 function shellEsc(arg: string): string {
 	return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Build the pi command args for a given member + role. */
-function buildCommand(member: Member, role: Role): string {
+/** PowerShell-escape a single argument (single-quote string, '' for internal quotes). */
+function psEsc(arg: string): string {
+	return `'${arg.replace(/'/g, "''")}'`;
+}
+
+/** Build the raw args array for a pi invocation (cross-platform, no shell escaping). */
+function buildArgs(member: Member, role: Role): string[] {
 	const vars = { name: member.name, team: team.name };
 
 	let systemPrompt = interpolate(role.systemPrompt, vars);
@@ -112,12 +119,17 @@ function buildCommand(member: Member, role: Role): string {
 		args.push("--tools", role.tools.join(","));
 	}
 
-	return "clear && " + args.map(shellEsc).join(" ");
+	return args;
+}
+
+/** Build a Unix shell command string for a pi invocation. */
+function buildCommand(member: Member, role: Role): string {
+	return "clear && " + buildArgs(member, role).map(shellEsc).join(" ");
 }
 
 // ── Validate members ──────────────────────────────────────────────────────────
 
-const commands: { member: Member; role: Role; command: string }[] = [];
+const commands: { member: Member; role: Role; command: string; args: string[] }[] = [];
 
 for (const member of members) {
 	const role = roles[member.role];
@@ -125,16 +137,21 @@ for (const member of members) {
 		console.error(`Unknown role "${member.role}" for member "${member.name}"`);
 		process.exit(1);
 	}
-	commands.push({ member, role, command: buildCommand(member, role) });
+	commands.push({ member, role, command: buildCommand(member, role), args: buildArgs(member, role) });
 }
 
 // ── Multiplexer ──────────────────────────────────────────────────────────────
 
-const hasCmux = Bun.spawnSync(["which", "cmux"]).exitCode === 0;
-const cmuxRunning = hasCmux && Bun.spawnSync(["cmux", "ping"]).exitCode === 0;
-const hasTmux = !cmuxRunning && Bun.spawnSync(["which", "tmux"]).exitCode === 0;
+// Use 'where' on Windows (equivalent of 'which' on Unix).
+const isWindows = process.platform === "win32";
+const findExe = isWindows ? "where" : "which";
 
-if (!cmuxRunning && !hasTmux) {
+const hasCmux = Bun.spawnSync([findExe, "cmux"]).exitCode === 0;
+const cmuxRunning = hasCmux && Bun.spawnSync(["cmux", "ping"]).exitCode === 0;
+const hasTmux = !cmuxRunning && Bun.spawnSync([findExe, "tmux"]).exitCode === 0;
+const hasWt = !cmuxRunning && !hasTmux && isWindows && Bun.spawnSync(["where", "wt"]).exitCode === 0;
+
+if (!cmuxRunning && !hasTmux && !hasWt && !isWindows) {
 	console.error("cmux or tmux is required to launch a team.\n");
 	console.error("To launch agents manually, run each of these in a separate terminal:");
 	for (const { command } of commands) console.error(`  ${command}`);
@@ -186,7 +203,7 @@ if (cmuxRunning) {
 	for (const { member } of commands) console.log(`  ✓ ${member.name}`);
 	console.log(`\nAgents launched in cmux workspace "${team.name}".`);
 
-} else {
+} else if (hasTmux) {
 	// ── tmux ─────────────────────────────────────────────────────────────────
 	const sessionName = team.name;
 	const inTmux = !!process.env.TMUX;
@@ -222,4 +239,64 @@ if (cmuxRunning) {
 			stdio: ["inherit", "inherit", "inherit"],
 		});
 	}
+
+} else if (hasWt) {
+	// ── Windows Terminal ─────────────────────────────────────────────────────
+	// Write a temporary PowerShell script file for each agent to sidestep the
+	// shell-escaping complexity of embedding complex system prompts in the wt
+	// command line. Each .ps1 file simply invokes the pi command directly.
+	//
+	// All tabs are opened in a single wt invocation with ';'-chained new-tab
+	// subcommands. This keeps them in one WT window and avoids race conditions
+	// from multiple wt.exe invocations trying to find the same window.
+	//
+	// Note: wt returns immediately after dispatching commands to the running
+	// Windows Terminal process — tabs open asynchronously.
+	const scriptPaths: string[] = [];
+	const ts = Date.now();
+
+	for (const { member, args } of commands) {
+		const scriptPath = join(tmpdir(), `pi2pi-${member.name}-${ts}.ps1`);
+		// Clear the console then launch pi. Using & (call operator) so PowerShell
+		// treats the first token as a command, not a string literal.
+		const psCmd = args.map(psEsc).join(" ");
+		writeFileSync(scriptPath, `Clear-Host\n& ${psCmd}\n`);
+		scriptPaths.push(scriptPath);
+	}
+
+	// Build a single wt invocation: --window new forces a fresh WT window.
+	const wtArgs: string[] = ["wt", "--window", "new"];
+	for (let i = 0; i < commands.length; i++) {
+		if (i > 0) wtArgs.push(";");
+		wtArgs.push(
+			"new-tab",
+			"--title", commands[i].member.name,
+			"--suppressApplicationTitle",
+			"powershell", "-NoExit", "-File", scriptPaths[i],
+		);
+	}
+
+	Bun.spawnSync(wtArgs);
+
+	for (const { member } of commands) console.log(`  ✓ ${member.name}`);
+	console.log(`\nAgents launched in Windows Terminal (${commands.length} tabs).`);
+	console.log("Tabs open asynchronously — it may take a moment for all agents to appear.");
+
+} else {
+	// ── Headless fallback (Windows, no terminal multiplexer) ─────────────────
+	// Spawn each agent as an independent background process. No interactive UI,
+	// but the agents connect to the broker and operate normally.
+	console.log("No terminal multiplexer found — launching agents as background processes.");
+	console.log("Install Windows Terminal for an interactive UI: https://aka.ms/terminal\n");
+
+	for (const { member, args } of commands) {
+		const proc = Bun.spawn(args, {
+			stdio: ["ignore", "ignore", "ignore"],
+		});
+		proc.unref(); // Allow the launcher to exit without waiting for agents
+		console.log(`  ✓ ${member.name} (pid ${proc.pid})`);
+	}
+
+	console.log(`\n${commands.length} agents launched in background.`);
+	console.log("Use 'tasklist | findstr bun' or Task Manager to locate them.");
 }
