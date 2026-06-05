@@ -10,13 +10,19 @@
  *   { type: "register", name: string, room: string }
  *   { type: "message",  id: string, to: string, content: string }
  *   { type: "reply",    id: string, content: string }
+ *   { type: "status",   state: "active"|"idle", model: string|null,
+ *                        contextTokens: number|null, contextWindow: number|null,
+ *                        contextPercent: number|null }
  *
  * Broker → Client:
- *   { type: "registered",  name: string, room: string }
- *   { type: "agent_list",  agents: string[], room: string }
- *   { type: "incoming",    id: string, from: string, content: string }
- *   { type: "reply_result",id: string, from: string, content: string }
- *   { type: "error",       id: string | null, reason: string }
+ *   { type: "registered",    name: string, room: string }
+ *   { type: "agent_list",    agents: string[], room: string }
+ *   { type: "incoming",      id: string, from: string, content: string }
+ *   { type: "reply_result",  id: string, from: string, content: string }
+ *   { type: "agent_status",  room: string, name: string, state: "active"|"idle",
+ *                             model: string|null, contextTokens: number|null,
+ *                             contextWindow: number|null, contextPercent: number|null }
+ *   { type: "error",         id: string | null, reason: string }
  *
  * Rooms:
  *   Agents are scoped by room. agent_list only contains room-mates.
@@ -30,7 +36,15 @@ const DEFAULT_PORT = 7331;
 const portArg = process.argv.indexOf("--port");
 const port = portArg !== -1 ? parseInt(process.argv[portArg + 1] ?? String(DEFAULT_PORT)) : DEFAULT_PORT;
 
-type AgentData = { name: string | null; room: string | null };
+type AgentData = {
+	name: string | null;
+	room: string | null;
+	state: "active" | "idle" | null;
+	model: string | null;
+	contextTokens: number | null;
+	contextWindow: number | null;
+	contextPercent: number | null;
+};
 
 // Keyed by "room/name"
 const agents = new Map<string, ServerWebSocket<AgentData>>();
@@ -58,6 +72,15 @@ function broadcastRoomList(room: string) {
 		if (ws.data.room === room) {
 			send(ws, { type: "agent_list", agents: members, room });
 		}
+	}
+}
+
+function broadcastAgentStatus(ws: ServerWebSocket<AgentData>) {
+	const { name, room, state, model, contextTokens, contextWindow, contextPercent } = ws.data;
+	if (!name || !room) return;
+	const msg = { type: "agent_status", room, name, state, model, contextTokens, contextWindow, contextPercent };
+	for (const peer of agents.values()) {
+		if (peer.data.room === room) send(peer, msg);
 	}
 }
 
@@ -134,6 +157,14 @@ function getVisibleLength(str: string): number {
 	return str.replace(/\u001B\[\d+(;\d+)*m/g, "").length;
 }
 
+/** Format a token count compactly: 52000 → "52k", 1500000 → "1.5M", null → "—" */
+function fmtTokens(n: number | null): string {
+	if (n === null) return "—";
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
+	if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+	return String(n);
+}
+
 function draw() {
 	if (!isTTY) return;
 
@@ -152,14 +183,28 @@ function draw() {
 	const titleBar = "─".repeat(3) + title + "─".repeat(Math.max(0, width - title.length - 3));
 	output += `\u001B[1;36m${titleBar}\u001B[0m\n`;
 
-	// Gather rooms
-	const rooms: Record<string, string[]> = {};
+	// Gather rooms with full agent status data
+	type RoomEntry = {
+		name: string;
+		state: "active" | "idle" | null;
+		model: string | null;
+		contextTokens: number | null;
+		contextWindow: number | null;
+		contextPercent: number | null;
+	};
+	const rooms: Record<string, RoomEntry[]> = {};
 	let totalAgents = 0;
 	for (const ws of agents.values()) {
 		if (ws.data.name && ws.data.room) {
 			const r = ws.data.room;
-			const n = ws.data.name;
-			(rooms[r] ??= []).push(n);
+			(rooms[r] ??= []).push({
+				name: ws.data.name,
+				state: ws.data.state,
+				model: ws.data.model,
+				contextTokens: ws.data.contextTokens,
+				contextWindow: ws.data.contextWindow,
+				contextPercent: ws.data.contextPercent,
+			});
 			totalAgents++;
 		}
 	}
@@ -168,17 +213,66 @@ function draw() {
 	let currentLine = 2; // Line 1 is the titleBar
 
 	for (let i = 0; i < roomList.length && currentLine < topHeight; i++) {
-		const [roomName, members] = roomList[i];
-		const roomLine = `  [1;33m🏠 ${roomName}[0m`;
+		const [roomName, entries] = roomList[i];
+		const roomLine = `  \u001B[1;33m🏠 ${roomName}\u001B[0m`;
 		const truncatedRoom = truncateAnsi(roomLine, width - 2);
 		output += truncatedRoom + " ".repeat(Math.max(0, width - getVisibleLength(truncatedRoom))) + "\n";
 		currentLine++;
 
-		for (let j = 0; j < members.length && currentLine < topHeight; j++) {
-			const isLast = j === members.length - 1;
+		// ── Compute per-room column widths for alignment ─────────────────────
+		// name column: widest agent name
+		const nameWidth = Math.max(...entries.map(e => e.name.length));
+		// model column: widest model string (or "—" placeholder)
+		const modelWidth = Math.max(...entries.map(e => (e.model ?? "—").length));
+		// token column: widest "tokens/window" string e.g. "52k/128k"
+		const tokWidth = Math.max(...entries.map(e =>
+			`${fmtTokens(e.contextTokens)}/${fmtTokens(e.contextWindow)}`.length
+		));
+
+		for (let j = 0; j < entries.length && currentLine < topHeight; j++) {
+			const e = entries[j];
+			const isLast = j === entries.length - 1;
 			const branch = isLast ? "└─" : "├─";
-			const agentLine = `    [90m${branch}[0m [32m${members[j]}[0m`;
-			const truncatedAgent = truncateAnsi(agentLine, width - 2);
+
+			// State column — fixed width: "● active" (8) / "○ idle  " (8)
+			const isActive = e.state === "active";
+			const hasState = e.state !== null;
+			const stateDot   = isActive ? "●" : "○";
+			const stateLabel = isActive ? "active" : (hasState ? "idle  " : "?     ");
+			const stateColor = isActive ? "\u001B[32m" : "\u001B[90m";
+
+			// Model column — padded to widest
+			const model = (e.model ?? "—").padEnd(modelWidth);
+
+			// Context bar — 8 blocks, colour by fill level
+			const pct = e.contextPercent;
+			const barColor = pct === null
+				? "\u001B[90m"
+				: pct >= 80 ? "\u001B[31m"
+				: pct >= 50 ? "\u001B[33m"
+				: "\u001B[32m";
+			const filled = pct === null ? 0 : Math.min(8, Math.round((pct / 100) * 8));
+			const bar = "█".repeat(filled) + "░".repeat(8 - filled);
+
+			// Percentage column — right-aligned in 4 chars ("100%" / " 42%" / "  —%")
+			const pctStr = pct === null ? "  —%" : `${Math.round(pct)}%`.padStart(4);
+
+			// Token counts column — padded to widest
+			const tokStr = `${fmtTokens(e.contextTokens)}/${fmtTokens(e.contextWindow)}`.padEnd(tokWidth);
+
+			// Name column — padded to widest
+			const namePad = e.name.padEnd(nameWidth);
+
+			const agentLine =
+				`    \u001B[90m${branch}\u001B[0m ` +
+				`\u001B[32m${namePad}\u001B[0m  ` +
+				`${stateColor}${stateDot} ${stateLabel}\u001B[0m  ` +
+				`\u001B[90m${model}\u001B[0m  ` +
+				`${barColor}[${bar}]\u001B[0m ` +
+				`${pctStr}  ` +
+				`\u001B[90m(${tokStr})\u001B[0m`;
+
+			const truncatedAgent = truncateAnsi(agentLine, width - 1);
 			output += truncatedAgent + " ".repeat(Math.max(0, width - getVisibleLength(truncatedAgent))) + "\n";
 			currentLine++;
 		}
@@ -208,7 +302,10 @@ function draw() {
 
 	let logLineCount = 0;
 	for (const logLine of visibleLogs) {
-		const truncated = truncateAnsi(logLine, width - 2);
+		// Strip any newlines that may have survived (defensive) and truncate
+		// to terminal width so no line can wrap onto a second row.
+		const singleLine = logLine.replace(/\r\n|\r|\n/g, " ");
+		const truncated = truncateAnsi(singleLine, width - 1);
 		const padding = " ".repeat(Math.max(0, width - getVisibleLength(truncated)));
 		output += truncated + padding + "\n";
 		logLineCount++;
@@ -224,7 +321,10 @@ function draw() {
 
 function log(msg: string) {
 	const timestamp = new Date().toLocaleTimeString();
-	const formatted = `[\u001B[90m${timestamp}\u001B[0m] ${msg}`;
+	// Collapse any newlines in the message so a multi-line LLM response
+	// doesn't inject real line breaks into the fixed-height log pane.
+	const sanitised = msg.replace(/\r\n|\r|\n/g, " ");
+	const formatted = `[\u001B[90m${timestamp}\u001B[0m] ${sanitised}`;
 	if (isTTY) {
 		logBuffer.push(formatted);
 		if (logBuffer.length > MAX_LOGS) {
@@ -241,15 +341,27 @@ Bun.serve<AgentData>({
 	fetch(req, server) {
 		const url = new URL(req.url);
 		if (url.pathname === "/agents") {
-			const rooms: Record<string, string[]> = {};
+			const rooms: Record<string, unknown[]> = {};
 			for (const ws of agents.values()) {
 				const r = ws.data.room ?? "(unknown)";
-				const n = ws.data.name ?? "(unknown)";
-				(rooms[r] ??= []).push(n);
+				(rooms[r] ??= []).push({
+					name: ws.data.name ?? "(unknown)",
+					state: ws.data.state,
+					model: ws.data.model,
+					contextTokens: ws.data.contextTokens,
+					contextWindow: ws.data.contextWindow,
+					contextPercent: ws.data.contextPercent,
+				});
 			}
 			return Response.json({ rooms });
 		}
-		if (server.upgrade(req, { data: { name: null, room: null } })) return undefined;
+		if (server.upgrade(req, {
+			data: {
+				name: null, room: null,
+				state: null, model: null,
+				contextTokens: null, contextWindow: null, contextPercent: null,
+			},
+		})) return undefined;
 		return new Response("Pi2Pi Broker — connect via WebSocket", { status: 200 });
 	},
 	websocket: {
@@ -296,6 +408,33 @@ Bun.serve<AgentData>({
 					send(ws, { type: "registered", name: n, room: r });
 					log(`"${n}" joined room "${r}". Members: [${roomMembers(r).join(", ")}]`);
 					broadcastRoomList(r);
+					if (isTTY) draw();
+					break;
+				}
+
+				// ── STATUS ────────────────────────────────────────────────────────────
+				case "status": {
+					if (!ws.data.name || !ws.data.room) {
+						send(ws, { type: "error", id: null, reason: "Must register before sending status" });
+						return;
+					}
+					const { state, model, contextTokens, contextWindow, contextPercent } = msg as {
+						state?: string;
+						model?: unknown;
+						contextTokens?: unknown;
+						contextWindow?: unknown;
+						contextPercent?: unknown;
+					};
+					if (state !== "active" && state !== "idle") {
+						send(ws, { type: "error", id: null, reason: 'status requires state "active" or "idle"' });
+						return;
+					}
+					ws.data.state = state;
+					ws.data.model = typeof model === "string" ? model : null;
+					ws.data.contextTokens = typeof contextTokens === "number" ? contextTokens : null;
+					ws.data.contextWindow = typeof contextWindow === "number" ? contextWindow : null;
+					ws.data.contextPercent = typeof contextPercent === "number" ? contextPercent : null;
+					broadcastAgentStatus(ws);
 					if (isTTY) draw();
 					break;
 				}
@@ -374,7 +513,7 @@ Bun.serve<AgentData>({
 				// If this agent was the originator: keep the entry — they may reconnect and the
 				// reply will be routed to their new socket when it arrives.
 				for (const [msgId, { originatorName, originatorRoom, targetName }] of pendingReplies) {
-					if (targetName === name && room === ws.data.room) {
+					if (targetName === name && originatorRoom === room) {
 						const originatorWs = agents.get(agentKey(originatorRoom, originatorName));
 						if (originatorWs) {
 							send(originatorWs, { type: "error", id: msgId, reason: `Agent "${name}" disconnected before replying` });
@@ -399,4 +538,3 @@ log(`HTTP status: http://localhost:${port}/agents`);
 if (isTTY) {
 	draw();
 }
-

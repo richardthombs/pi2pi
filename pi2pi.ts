@@ -54,6 +54,11 @@ export default function (pi: ExtensionAPI) {
 	let uiNotify: ((msg: string, level: "info" | "warning" | "error" | "success") => void) | null = null;
 	let uiSetStatus: ((id: string, text: string | undefined) => void) | null = null;
 
+	// Agent instrumentation state — sent to broker as status updates.
+	let agentModel: string | null = null;
+	let agentState: "active" | "idle" = "idle";
+	let getContextUsage: (() => { tokens: number | null; contextWindow: number; percent: number | null } | undefined) | null = null;
+
 	// Incoming messages awaiting a reply, keyed by message ID.
 	const incomingQueue = new Map<string, { id: string; from: string }>();
 
@@ -191,6 +196,19 @@ export default function (pi: ExtensionAPI) {
 		uiSetStatus?.("pi2pi", text);
 	}
 
+	function sendStatus() {
+		if (!ws || ws.readyState !== WebSocket.OPEN || !agentName) return;
+		const usage = getContextUsage?.();
+		ws.send(JSON.stringify({
+			type: "status",
+			state: agentState,
+			model: agentModel,
+			contextTokens: usage?.tokens ?? null,
+			contextWindow: usage?.contextWindow ?? null,
+			contextPercent: usage?.percent ?? null,
+		}));
+	}
+
 	function refreshStatus() {
 		if (!agentName || !agentRoom) return;
 		const others = onlineAgents.filter((n) => n !== agentName);
@@ -265,6 +283,8 @@ export default function (pi: ExtensionAPI) {
 			case "registered": {
 				notify(`Registered as "${name}" in room "${agentRoom}" on ${brokerUrl}`, "success");
 				refreshStatus();
+				// Send initial idle status so the broker dashboard has data immediately.
+				sendStatus();
 				break;
 			}
 
@@ -353,6 +373,8 @@ export default function (pi: ExtensionAPI) {
 		reconnectAttempts = 0;
 		uiNotify = ctx.ui.notify.bind(ctx.ui);
 		uiSetStatus = ctx.ui.setStatus.bind(ctx.ui);
+		agentModel = ctx.model ? (ctx.model.name || ctx.model.id) : null;
+		getContextUsage = ctx.getContextUsage.bind(ctx);
 
 		brokerUrl = ((pi.getFlag("broker") as string | undefined) ?? BROKER_DEFAULT).trim();
 
@@ -379,6 +401,9 @@ export default function (pi: ExtensionAPI) {
 		shutdownRequested = true;
 		uiNotify = null;
 		uiSetStatus = null;
+		agentModel = null;
+		agentState = "idle";
+		getContextUsage = null;
 		agentName = null;
 		agentRoom = null;
 		incomingQueue.clear();
@@ -405,10 +430,24 @@ export default function (pi: ExtensionAPI) {
 	// Replies are always buffered first. If the agent used wait+read they will
 	// have been claimed already. Any that weren't are injected here as follow-up
 	// turns so the agent still sees them on the next turn.
-	pi.on("agent_start", async () => { agentTurnActive = true; });
+	pi.on("agent_start", async (_event, ctx) => {
+		agentTurnActive = true;
+		agentState = "active";
+		getContextUsage = ctx.getContextUsage.bind(ctx);
+		sendStatus();
+	});
 
-	pi.on("agent_end", async () => {
+	pi.on("model_select", async (event, ctx) => {
+		agentModel = (event.model.name || event.model.id) ?? null;
+		getContextUsage = ctx.getContextUsage.bind(ctx);
+		sendStatus();
+	});
+
+	pi.on("agent_end", async (_event, ctx) => {
 		agentTurnActive = false;
+		agentState = "idle";
+		getContextUsage = ctx.getContextUsage.bind(ctx);
+		sendStatus();
 		for (const [id, entry] of replyBuffer) {
 			replyBuffer.delete(id);
 			if (entry.claimed) continue;
