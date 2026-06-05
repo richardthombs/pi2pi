@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "broker": "bun broker.ts",
-    "launch": "bun launcher.ts"
+    "launch": "bun launcher.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "yaml": "^2.9.0"
