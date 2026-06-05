@@ -91,6 +91,11 @@ function psEsc(arg: string): string {
 	return `'${arg.replace(/'/g, "''")}'`;
 }
 
+/** cmd.exe-escape a single argument using double quotes. */
+function cmdEsc(arg: string): string {
+	return `"${arg.replace(/"/g, '""')}"`;
+}
+
 /** Build the raw args array for a pi invocation (cross-platform, no shell escaping). */
 function buildArgs(member: Member, role: Role): string[] {
 	const vars = { name: member.name, team: team.name };
@@ -146,12 +151,60 @@ for (const member of members) {
 const isWindows = process.platform === "win32";
 const findExe = isWindows ? "where" : "which";
 
-const hasCmux = Bun.spawnSync([findExe, "cmux"]).exitCode === 0;
-const cmuxRunning = hasCmux && Bun.spawnSync(["cmux", "ping"]).exitCode === 0;
-const hasTmux = !cmuxRunning && Bun.spawnSync([findExe, "tmux"]).exitCode === 0;
-const hasWt = !cmuxRunning && !hasTmux && isWindows && Bun.spawnSync(["where", "wt"]).exitCode === 0;
+function resolveExecutable(name: string): string | null {
+	if (isWindows) {
+		const windowsCandidates = [
+			process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Microsoft", "WindowsApps", `${name}.exe`) : null,
+			process.env.USERPROFILE ? join(process.env.USERPROFILE, "AppData", "Local", "Microsoft", "WindowsApps", `${name}.exe`) : null,
+		].filter((path): path is string => !!path);
 
-if (!cmuxRunning && !hasTmux && !hasWt && !isWindows) {
+		for (const candidate of windowsCandidates) {
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+
+	try {
+		const result = Bun.spawnSync([findExe, name]);
+		if (result.exitCode !== 0) return null;
+
+		const output = Buffer.from(result.stdout).toString("utf8");
+		const match = output.split(/\r?\n/).map(line => line.trim()).find(Boolean);
+		return match ?? null;
+	} catch {
+		return null;
+	}
+}
+
+function decodeOutput(output?: ArrayBufferLike | Uint8Array | null): string {
+	if (!output) return "";
+	return Buffer.from(output).toString("utf8").trim();
+}
+
+function launchHeadless(): void {
+	// ── Headless fallback (Windows, no terminal multiplexer) ─────────────────
+	// Spawn each agent as an independent background process. No interactive UI,
+	// but the agents connect to the broker and operate normally.
+	console.log("No terminal multiplexer found — launching agents as background processes.");
+	console.log("Install Windows Terminal for an interactive UI: https://aka.ms/terminal\n");
+
+	for (const { member, args } of commands) {
+		const proc = Bun.spawn(args, {
+			stdio: ["ignore", "ignore", "ignore"],
+		});
+		proc.unref(); // Allow the launcher to exit without waiting for agents
+		console.log(`  ✓ ${member.name} (pid ${proc.pid})`);
+	}
+
+	console.log(`\n${commands.length} agents launched in background.`);
+	console.log("Use 'tasklist | findstr bun' or Task Manager to locate them.");
+}
+
+const cmuxPath = resolveExecutable("cmux");
+const cmuxRunning = !!cmuxPath && Bun.spawnSync([cmuxPath, "ping"]).exitCode === 0;
+const tmuxPath = !cmuxRunning ? resolveExecutable("tmux") : null;
+const wtPath = !cmuxRunning && !tmuxPath && isWindows ? resolveExecutable("wt") : null;
+
+if (!cmuxRunning && !tmuxPath && !isWindows) {
 	console.error("cmux or tmux is required to launch a team.\n");
 	console.error("To launch agents manually, run each of these in a separate terminal:");
 	for (const { command } of commands) console.error(`  ${command}`);
@@ -194,7 +247,7 @@ if (cmuxRunning) {
 	const layout = buildLayout(commands.map(({ command }) => command));
 
 	Bun.spawnSync([
-		"cmux", "new-workspace",
+		cmuxPath!, "new-workspace",
 		"--name", team.name,
 		"--layout", JSON.stringify(layout),
 		"--focus", "true",
@@ -203,7 +256,7 @@ if (cmuxRunning) {
 	for (const { member } of commands) console.log(`  ✓ ${member.name}`);
 	console.log(`\nAgents launched in cmux workspace "${team.name}".`);
 
-} else if (hasTmux) {
+} else if (tmuxPath) {
 	// ── tmux ─────────────────────────────────────────────────────────────────
 	const sessionName = team.name;
 	const inTmux = !!process.env.TMUX;
@@ -211,13 +264,13 @@ if (cmuxRunning) {
 	if (inTmux) {
 		// Already inside tmux — open a new window for each agent.
 		for (const { member, command } of commands) {
-			Bun.spawnSync(["tmux", "new-window", "-n", member.name, command]);
+			Bun.spawnSync([tmuxPath, "new-window", "-n", member.name, command]);
 			console.log(`  ✓ ${member.name}`);
 		}
 		console.log("\nAgents launched in new tmux windows.");
 	} else {
 		// Not in tmux — create a new named session.
-		const sessionCheck = Bun.spawnSync(["tmux", "has-session", "-t", sessionName]);
+		const sessionCheck = Bun.spawnSync([tmuxPath, "has-session", "-t", sessionName]);
 		if (sessionCheck.exitCode === 0) {
 			console.error(`A tmux session named "${sessionName}" already exists.`);
 			console.error(`Attach with: tmux attach-session -t ${sessionName}`);
@@ -226,21 +279,21 @@ if (cmuxRunning) {
 		}
 
 		const [first, ...rest] = commands;
-		Bun.spawnSync(["tmux", "new-session", "-d", "-s", sessionName, "-n", first.member.name, first.command]);
+		Bun.spawnSync([tmuxPath, "new-session", "-d", "-s", sessionName, "-n", first.member.name, first.command]);
 		console.log(`  ✓ ${first.member.name}`);
 
 		for (const { member, command } of rest) {
-			Bun.spawnSync(["tmux", "new-window", "-t", sessionName, "-n", member.name, command]);
+			Bun.spawnSync([tmuxPath, "new-window", "-t", sessionName, "-n", member.name, command]);
 			console.log(`  ✓ ${member.name}`);
 		}
 
 		console.log(`\nAttaching to tmux session "${sessionName}"...`);
-		Bun.spawnSync(["tmux", "attach-session", "-t", sessionName], {
+		Bun.spawnSync([tmuxPath, "attach-session", "-t", sessionName], {
 			stdio: ["inherit", "inherit", "inherit"],
 		});
 	}
 
-} else if (hasWt) {
+} else if (isWindows) {
 	// ── Windows Terminal ─────────────────────────────────────────────────────
 	// Write a temporary PowerShell script file for each agent to sidestep the
 	// shell-escaping complexity of embedding complex system prompts in the wt
@@ -254,49 +307,133 @@ if (cmuxRunning) {
 	// Windows Terminal process — tabs open asynchronously.
 	const scriptPaths: string[] = [];
 	const ts = Date.now();
+	const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+	const powershellPath = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+	const powershellExe = existsSync(powershellPath) ? powershellPath : "powershell";
+	const cmdPath = process.env.ComSpec ?? join(systemRoot, "System32", "cmd.exe");
 
 	for (const { member, args } of commands) {
 		const scriptPath = join(tmpdir(), `pi2pi-${member.name}-${ts}.ps1`);
 		// Clear the console then launch pi. Using & (call operator) so PowerShell
 		// treats the first token as a command, not a string literal.
 		const psCmd = args.map(psEsc).join(" ");
-		writeFileSync(scriptPath, `Clear-Host\n& ${psCmd}\n`);
+		writeFileSync(scriptPath, `$Host.UI.RawUI.WindowTitle = ${psEsc(member.name)}\nClear-Host\n& ${psCmd}\n`);
 		scriptPaths.push(scriptPath);
 	}
 
-	// Build a single wt invocation: --window new forces a fresh WT window.
-	const wtArgs: string[] = ["wt", "--window", "new"];
-	for (let i = 0; i < commands.length; i++) {
-		if (i > 0) wtArgs.push(";");
-		wtArgs.push(
-			"new-tab",
-			"--title", commands[i].member.name,
-			"--suppressApplicationTitle",
-			"powershell", "-NoExit", "-File", scriptPaths[i],
-		);
+	function paneCommandArgs(scriptPath: string): string[] {
+		return [
+			powershellExe,
+			"-NoExit",
+			"-NoProfile",
+			"-ExecutionPolicy", "Bypass",
+			"-File", scriptPath,
+		];
 	}
 
-	Bun.spawnSync(wtArgs);
+	const wtSubcommandArgs: string[] = ["--window", "new"];
+	if (commands.length > 0) {
+		wtSubcommandArgs.push(
+			"new-tab",
+			"--title", team.name,
+			"--suppressApplicationTitle",
+			...paneCommandArgs(scriptPaths[0]),
+		);
+		if (commands.length > 1) {
+			// Windows Terminal uses -V for a vertical divider (left/right panes)
+			// and -H for a horizontal divider (top/bottom panes).
+			wtSubcommandArgs.push(";", "split-pane", "-V", "-s", "0.5", ...paneCommandArgs(scriptPaths[1]));
+		}
+		if (commands.length > 2) {
+			// After the first split, focus remains on the original (left) pane.
+			// Move into the right-hand pane before building the vertical stack.
+			wtSubcommandArgs.push(";", "move-focus", "right");
+		}
+		for (let i = 2; i < commands.length; i++) {
+			const remainingRightPanes = commands.length - i + 1;
+			const splitSize = ((remainingRightPanes - 1) / remainingRightPanes).toFixed(4);
+			wtSubcommandArgs.push(";", "split-pane", "-H", "-s", splitSize, ...paneCommandArgs(scriptPaths[i]));
+			if (i < commands.length - 1) {
+				wtSubcommandArgs.push(";", "move-focus", "down");
+			}
+		}
+	}
 
-	for (const { member } of commands) console.log(`  ✓ ${member.name}`);
-	console.log(`\nAgents launched in Windows Terminal (${commands.length} tabs).`);
-	console.log("Tabs open asynchronously — it may take a moment for all agents to appear.");
+	function logWtSuccess(): void {
+		for (const { member } of commands) console.log(`  ✓ ${member.name}`);
+		console.log(`\nAgents launched in Windows Terminal (${commands.length} panes).`);
+		console.log("Panes open asynchronously — it may take a moment for all agents to appear.");
+	}
+
+	let launched = false;
+	let failureMessage = "";
+	const isWindowsAppsAlias = !!wtPath && /[\\/]WindowsApps[\\/]/i.test(wtPath);
+
+	if (wtPath && !isWindowsAppsAlias) {
+		try {
+			const directResult = Bun.spawnSync([wtPath, ...wtSubcommandArgs]);
+			if (directResult.exitCode === 0) {
+				launched = true;
+			} else {
+				failureMessage = decodeOutput(directResult.stderr) || decodeOutput(directResult.stdout) || `exit code ${directResult.exitCode}`;
+			}
+		} catch (error) {
+			failureMessage = error instanceof Error ? error.message : String(error);
+		}
+	}
+
+	if (!launched) {
+		const cmdLauncherPath = join(tmpdir(), `pi2pi-wt-launch-${ts}.cmd`);
+		const cmdLine = ["wt", ...wtSubcommandArgs].map(cmdEsc).join(" ");
+		writeFileSync(cmdLauncherPath, `@echo off\r\n${cmdLine}\r\n`);
+
+		const cmdResult = Bun.spawnSync([cmdPath, "/d", "/c", cmdLauncherPath]);
+		if (cmdResult.exitCode === 0) {
+			launched = true;
+		} else {
+			const cmdFailure = decodeOutput(cmdResult.stderr) || decodeOutput(cmdResult.stdout) || `exit code ${cmdResult.exitCode}`;
+			failureMessage = failureMessage ? `${failureMessage}; ${cmdFailure}` : cmdFailure;
+		}
+	}
+
+	if (!launched) {
+		const launcherScriptPath = join(tmpdir(), `pi2pi-wt-launch-${ts}.ps1`);
+		const wtArgLines = wtSubcommandArgs.map(arg => `  ${psEsc(arg)}`).join(",\n");
+		writeFileSync(
+			launcherScriptPath,
+			[
+				"$ErrorActionPreference = 'Stop'",
+				"$wtArgs = @(",
+				wtArgLines,
+				")",
+				"& wt @wtArgs",
+				"exit $LASTEXITCODE",
+			].join("\n") + "\n",
+		);
+
+		const shellResult = Bun.spawnSync([
+			powershellExe,
+			"-NoProfile",
+			"-ExecutionPolicy", "Bypass",
+			"-File", launcherScriptPath,
+		]);
+
+		if (shellResult.exitCode === 0) {
+			launched = true;
+		} else {
+			const shellFailure = decodeOutput(shellResult.stderr) || decodeOutput(shellResult.stdout) || `exit code ${shellResult.exitCode}`;
+			failureMessage = failureMessage ? `${failureMessage}; ${shellFailure}` : shellFailure;
+		}
+	}
+
+	if (launched) {
+		logWtSuccess();
+	} else {
+		if (failureMessage) console.warn(`Windows Terminal launch failed (${failureMessage}).`);
+		console.warn("Falling back to background processes.\n");
+		launchHeadless();
+	}
 
 } else {
-	// ── Headless fallback (Windows, no terminal multiplexer) ─────────────────
-	// Spawn each agent as an independent background process. No interactive UI,
-	// but the agents connect to the broker and operate normally.
-	console.log("No terminal multiplexer found — launching agents as background processes.");
-	console.log("Install Windows Terminal for an interactive UI: https://aka.ms/terminal\n");
-
-	for (const { member, args } of commands) {
-		const proc = Bun.spawn(args, {
-			stdio: ["ignore", "ignore", "ignore"],
-		});
-		proc.unref(); // Allow the launcher to exit without waiting for agents
-		console.log(`  ✓ ${member.name} (pid ${proc.pid})`);
-	}
-
-	console.log(`\n${commands.length} agents launched in background.`);
-	console.log("Use 'tasklist | findstr bun' or Task Manager to locate them.");
+	launchHeadless();
 }
