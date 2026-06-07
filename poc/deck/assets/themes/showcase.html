@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>POC Deck Theme Showcase</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=DM+Sans:wght@400;500;600&family=DM+Serif+Display:ital@0;1&family=Merriweather:ital,wght@0,400;0,700;1,400;1,700&family=Merriweather+Sans:wght@400;500;600&family=Source+Serif+4:ital,wght@0,500;1,500;1,600&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Source+Sans+3:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,500;1,500;1,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --page-bg: #0f1115;
+        --panel: #171a21;
+        --panel-2: #1f2430;
+        --text: #eef2f7;
+        --muted: #a9b3c2;
+        --border: #313847;
+        --accent: #7cc6ff;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Inter, "Segoe UI", Arial, sans-serif;
+        background: linear-gradient(180deg, #11141b 0%, #0b0d12 100%);
+        color: var(--text);
+      }
+      header {
+        padding: 32px 28px 20px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(10, 12, 16, 0.88);
+      }
+      h1 { margin: 0 0 8px; font-size: 32px; }
+      header p { margin: 0; color: var(--muted); max-width: 1050px; line-height: 1.5; }
+      .section-heading { padding: 26px 24px 0; }
+      .section-heading h2 { margin: 0 0 6px; font-size: 24px; }
+      .section-heading p { margin: 0; color: var(--muted); }
+      .card-grid, .background-grid {
+        padding: 24px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+        gap: 20px;
+      }
+      .full-width-list { padding: 24px; display: grid; gap: 22px; }
+      .theme-card, .full-card {
+        background: linear-gradient(180deg, var(--panel) 0%, #131720 100%);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+      }
+      .theme-header { padding: 18px 18px 14px; border-bottom: 1px solid var(--border); }
+      .theme-title { margin: 0 0 6px; font-size: 22px; }
+      .theme-path { margin: 0; color: var(--accent); font-size: 13px; word-break: break-all; }
+      .theme-meta {
+        padding: 14px 18px;
+        display: grid;
+        gap: 10px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .full-card .theme-meta { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+      .meta-row { display: grid; gap: 4px; }
+      .meta-label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .meta-value { font-size: 14px; line-height: 1.4; }
+      .swatches {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        padding: 0 18px 18px;
+      }
+      .swatch {
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 12px;
+        overflow: hidden;
+        background: var(--panel-2);
+      }
+      .swatch-color { height: 42px; }
+      .swatch-label { padding: 8px 10px 10px; }
+      .swatch-name { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+      .swatch-hex { font-size: 13px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+      .preview-wrap, .full-preview-wrap { padding: 0 18px 18px; }
+      .full-preview-wrap {
+        display: flex;
+        justify-content: center;
+      }
+      .mock-slide, .background-panel {
+        width: 100%;
+        border: none;
+        border-radius: 0;
+        overflow: hidden;
+        position: relative;
+      }
+      .mock-slide {
+        color: var(--slide-body-text);
+        background-color: var(--slide-bg);
+        padding: 28px;
+      }
+      .mock-slide.mini { min-height: 360px; }
+      .mock-slide.full {
+        width: min(100%, calc(90vh * 16 / 9));
+        aspect-ratio: 16 / 9;
+        min-height: auto;
+        padding: 72px 88px;
+      }
+      .background-panel { height: 280px; }
+      .eyebrow {
+        display: inline-block;
+        margin-bottom: 16px;
+        padding: 7px 11px;
+        border: 1px solid var(--slide-border);
+        color: var(--slide-highlight);
+        font-size: 13px;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+        background: var(--slide-tag-bg, transparent);
+      }
+      .mock-slide h1,
+      .mock-slide h2,
+      .mock-slide h3,
+      .mock-slide p,
+      .mock-slide small {
+        margin: 0;
+      }
+      .mock-slide h1,
+      .mock-slide h2,
+      .mock-slide h3 {
+        color: var(--slide-headings);
+        font-family: var(--heading-font);
+      }
+      .mock-slide h1 {
+        font-size: var(--theme-text-title);
+        font-style: var(--heading-style, normal);
+        font-weight: 500;
+        line-height: 1.03;
+        max-width: 14ch;
+      }
+      .mock-slide h2 {
+        font-size: var(--theme-text-subheading);
+        font-style: var(--heading-style, normal);
+        font-weight: 500;
+        line-height: 1.12;
+        max-width: 28ch;
+      }
+      .mock-slide h3 {
+        font-size: var(--theme-text-section-heading);
+        font-style: var(--heading-style, normal);
+        font-weight: 500;
+        line-height: 1.2;
+      }
+      .mock-slide p,
+      .mock-slide small {
+        font-family: var(--body-font);
+      }
+      .mock-slide p {
+        color: var(--slide-body-text);
+        font-size: var(--theme-text-body);
+        line-height: 1.55;
+        max-width: 42ch;
+      }
+      .mock-slide small {
+        display: block;
+        color: var(--slide-muted);
+        font-size: var(--theme-text-small);
+        line-height: 1.45;
+      }
+      .mock-slide h1 + h2 { margin-top: var(--theme-space-title-to-subheading); }
+      .mock-slide h1 + p { margin-top: var(--theme-space-title-to-body); }
+      .mock-slide h2 + h3 { margin-top: var(--theme-space-subheading-to-section-heading); }
+      .mock-slide h2 + p { margin-top: var(--theme-space-subheading-to-body); }
+      .mock-slide p + h3 { margin-top: var(--theme-space-body-to-section-heading); }
+      .mock-slide h3 + p { margin-top: var(--theme-space-section-heading-to-body); }
+      .mock-slide p + p { margin-top: var(--theme-space-paragraph); }
+      .mock-slide p + small { margin-top: var(--theme-space-body-to-small); }
+      .mock-slide strong { color: var(--slide-highlight); }
+      .mock-slide ul { margin: 0; padding-left: 26px; }
+      .columns {
+        display: grid;
+        grid-template-columns: 1.15fr 0.95fr;
+        gap: 28px;
+        margin-top: 22px;
+      }
+      .mock-slide.mini .columns {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+        margin-top: 14px;
+      }
+      .panel {
+        background: transparent;
+        border: none;
+        padding: 22px 0;
+      }
+      .mock-slide.mini .panel { padding: 0; }
+      .semantic-success { color: var(--slide-success); font-weight: 600; }
+      .semantic-warning { color: var(--slide-warning); font-weight: 600; }
+      .semantic-error { color: var(--slide-error); font-weight: 600; }
+      .semantic-muted { color: var(--slide-muted); font-weight: 500; }
+      .rule {
+        height: 1px;
+        background: var(--slide-border);
+        margin: 24px 0;
+      }
+      .muted-line { color: var(--slide-muted); font-size: 19px; margin-top: 18px; }
+
+      .theme-01,
+      .theme-02,
+      .theme-03,
+      .theme-04,
+      .theme-05 {
+        --theme-text-title: clamp(3rem, 5vw, 5rem);
+        --theme-text-subheading: clamp(1.375rem, 2vw, 2rem);
+        --theme-text-section-heading: clamp(1.125rem, 1.4vw, 1.5rem);
+        --theme-text-body: clamp(1.125rem, 1.4vw, 1.375rem);
+        --theme-text-small: clamp(0.875rem, 1vw, 1rem);
+        --theme-space-title-to-subheading: 0.75rem;
+        --theme-space-subheading-to-section-heading: 1rem;
+        --theme-space-title-to-body: 1.25rem;
+        --theme-space-subheading-to-body: 0.625rem;
+        --theme-space-body-to-section-heading: 1.5rem;
+        --theme-space-section-heading-to-body: 0.5rem;
+        --theme-space-paragraph: 0.75rem;
+        --theme-space-body-to-small: 0.5rem;
+      }
+
+      .theme-01 {
+        --slide-bg: #0a0a0a;
+        --slide-body-text: #f5f4f0;
+        --slide-headings: #7b8fa8;
+        --slide-highlight: #bdd6f8;
+        --slide-muted: #f5f4f066;
+        --slide-success: #7eaf88;
+        --slide-warning: #d09257;
+        --slide-error: #c9777a;
+        --slide-border: #2a2a2a;
+        --slide-panel: rgba(17,17,17,0.76);
+        --heading-style: normal;
+        --heading-font: "Merriweather", Georgia, serif;
+        --body-font: "Merriweather Sans", Inter, "Segoe UI", sans-serif;
+      }
+      .theme-02 {
+        --slide-bg: #0a0a0a;
+        --slide-body-text: #f5f4f0;
+        --slide-headings: #7b8fa8;
+        --slide-highlight: #bdd6f8;
+        --slide-muted: #f5f4f066;
+        --slide-success: #7eaf88;
+        --slide-warning: #d09257;
+        --slide-error: #c9777a;
+        --slide-border: #2a2a2a;
+        --slide-panel: rgba(17,17,17,0.76);
+        --heading-style: normal;
+        --heading-font: "Merriweather", Georgia, serif;
+        --body-font: "Merriweather Sans", Inter, "Segoe UI", sans-serif;
+      }
+      .theme-03 {
+        --slide-bg: #0a0a0a;
+        --slide-body-text: #f5f4f0;
+        --slide-headings: #7b8fa8;
+        --slide-highlight: #bdd6f8;
+        --slide-muted: #f5f4f066;
+        --slide-success: #7eaf88;
+        --slide-warning: #d09257;
+        --slide-error: #c9777a;
+        --slide-border: #2a2a2a;
+        --slide-panel: rgba(17,17,17,0.76);
+        --heading-style: normal;
+        --heading-font: "Merriweather", Georgia, serif;
+        --body-font: "Merriweather Sans", Inter, "Segoe UI", sans-serif;
+      }
+      .theme-04 {
+        --slide-bg: #0a0a0a;
+        --slide-body-text: #f5f4f0;
+        --slide-headings: #7b8fa8;
+        --slide-highlight: #bdd6f8;
+        --slide-muted: #f5f4f066;
+        --slide-success: #7eaf88;
+        --slide-warning: #d09257;
+        --slide-error: #c9777a;
+        --slide-border: #2a2a2a;
+        --slide-panel: rgba(17,17,17,0.76);
+        --heading-style: normal;
+        --heading-font: "Merriweather", Georgia, serif;
+        --body-font: "Merriweather Sans", Inter, "Segoe UI", sans-serif;
+      }
+      .theme-05 {
+        --slide-bg: #0a0a0a;
+        --slide-body-text: #f5f4f0;
+        --slide-headings: #7b8fa8;
+        --slide-highlight: #bdd6f8;
+        --slide-muted: #f5f4f066;
+        --slide-success: #7eaf88;
+        --slide-warning: #d09257;
+        --slide-error: #c9777a;
+        --slide-border: #2a2a2a;
+        --slide-panel: rgba(17,17,17,0.76);
+        --heading-style: normal;
+        --heading-font: "Merriweather", Georgia, serif;
+        --body-font: "Merriweather Sans", Inter, "Segoe UI", sans-serif;
+      }
+
+      .bg-01,
+      .bg-02,
+      .bg-03,
+      .bg-04,
+      .bg-05 {
+        background:
+          radial-gradient(circle at 72% 58%, rgba(123, 143, 168, 0.0225), transparent 26%),
+          radial-gradient(circle at 86% 36%, rgba(155, 176, 201, 0.01875), transparent 18%),
+          url("bg-theme-01.svg"),
+          linear-gradient(rgba(255,255,255,0.00525) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255,255,255,0.00525) 1px, transparent 1px),
+          #0a0a0a;
+        background-size: auto, auto, cover, 60px 60px, 60px 60px, auto;
+        background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, no-repeat;
+        background-position: center, center, center, center, center, center;
+      }
+
+      .bg-only-01 {
+        background:
+          radial-gradient(circle at 72% 58%, rgba(123, 143, 168, 0.0225), transparent 26%),
+          radial-gradient(circle at 86% 36%, rgba(155, 176, 201, 0.01875), transparent 18%),
+          url("bg-theme-01.svg"),
+          linear-gradient(rgba(255,255,255,0.00525) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255,255,255,0.00525) 1px, transparent 1px),
+          #0a0a0a;
+        background-size: auto, auto, cover, 60px 60px, 60px 60px, auto;
+        background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, no-repeat;
+        background-position: center, center, center, center, center, center;
+      }
+      .bg-only-02 {
+        background:
+          radial-gradient(circle at 18% 46%, rgba(123, 143, 168, 0.014), transparent 18%),
+          radial-gradient(circle at 68% 38%, rgba(155, 176, 201, 0.012), transparent 18%),
+          radial-gradient(circle at 86% 22%, rgba(123, 143, 168, 0.01), transparent 16%),
+          url("bg-theme-02.svg"),
+          linear-gradient(rgba(255,255,255,0.004) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255,255,255,0.004) 1px, transparent 1px),
+          #0a0a0a;
+        background-size: auto, auto, auto, cover, 60px 60px, 60px 60px, auto;
+        background-repeat: no-repeat, no-repeat, no-repeat, no-repeat, repeat, repeat, no-repeat;
+        background-position: center, center, center, center, center, center, center;
+      }
+      .bg-only-03 {
+        background:
+          radial-gradient(circle at 12% 14%, rgba(120, 191, 202, 0.02625), transparent 20%),
+          radial-gradient(circle at 84% 18%, rgba(134, 165, 197, 0.03375), transparent 24%),
+          url("bg-theme-03.svg"),
+          linear-gradient(160deg, #0f1823 0%, #0b121b 56%, #081018 100%);
+        background-size: auto, auto, cover, cover;
+        background-repeat: no-repeat;
+        background-position: center;
+      }
+      .bg-only-04 {
+        background:
+          radial-gradient(circle at 84% 76%, rgba(198, 179, 142, 0.014), transparent 24%),
+          url("bg-theme-04.svg"),
+          linear-gradient(180deg, rgba(255,255,255,0.0022), rgba(255,255,255,0.0022)),
+          #12100f;
+        background-size: auto, cover, auto, auto;
+        background-repeat: no-repeat;
+        background-position: center;
+      }
+      .bg-only-05 {
+        background:
+          radial-gradient(circle at 88% 18%, rgba(139, 184, 182, 0.02625), transparent 24%),
+          radial-gradient(circle at 14% 14%, rgba(142, 167, 193, 0.03), transparent 18%),
+          url("bg-theme-05.svg"),
+          linear-gradient(165deg, #131a22 0%, #0d1117 58%, #0a0e13 100%);
+        background-size: auto, auto, cover, cover;
+        background-repeat: no-repeat;
+        background-position: center;
+      }
+
+      footer { padding: 0 24px 28px; color: var(--muted); font-size: 14px; }
+      code { background: rgba(255,255,255,0.08); padding: 0.15em 0.4em; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Custom Theme Showcase</h1>
+      <p>
+        Theme 01 is now the visual base. Themes 02–05 reuse the same theme-01 palette and background so you can compare them primarily as font-driven variations, directly from <code>file://</code>.
+      </p>
+    </header>
+
+    <section class="section-heading">
+      <h2>Compact comparison</h2>
+      <p>Quickly compare the same palette and type hierarchy across five swatches.</p>
+    </section>
+
+    <main class="card-grid">
+      <section class="theme-card">
+        <div class="theme-header"><h2 class="theme-title">01 — Midnight Blueprint</h2><p class="theme-path">Favourite / deck default</p></div>
+        <div class="theme-meta">
+          <div class="meta-row"><div class="meta-label">Heading font</div><div class="meta-value">Merriweather</div></div>
+          <div class="meta-row"><div class="meta-label">Body font</div><div class="meta-value">Merriweather Sans</div></div>
+          <div class="meta-row"><div class="meta-label">Background</div><div class="meta-value">Theme-01 structural background with archival linework</div></div>
+        </div>
+        <div class="swatches">
+          <div class="swatch"><div class="swatch-color" style="background:#0a0a0a"></div><div class="swatch-label"><div class="swatch-name">Background</div><div class="swatch-hex">#0a0a0a</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7b8fa8"></div><div class="swatch-label"><div class="swatch-name">Headings</div><div class="swatch-hex">#7b8fa8</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#bdd6f8"></div><div class="swatch-label"><div class="swatch-name">Highlight</div><div class="swatch-hex">#bdd6f8</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#f5f4f0"></div><div class="swatch-label"><div class="swatch-name">Body text</div><div class="swatch-hex">#f5f4f0</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#f5f4f066"></div><div class="swatch-label"><div class="swatch-name">Muted</div><div class="swatch-hex">#f5f4f066</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7eaf88"></div><div class="swatch-label"><div class="swatch-name">Success</div><div class="swatch-hex">#7eaf88</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#d09257"></div><div class="swatch-label"><div class="swatch-name">Warning</div><div class="swatch-hex">#d09257</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#c9777a"></div><div class="swatch-label"><div class="swatch-name">Error</div><div class="swatch-hex">#c9777a</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7b8fa8"></div><div class="swatch-label"><div class="swatch-name">Background image</div><div class="swatch-hex">#7b8fa8</div></div></div>
+        </div>
+        <div class="preview-wrap"><div class="mock-slide mini theme-01 bg-01"><div class="eyebrow">Type scale</div><h1>Slide title carries the main takeaway</h1><h2>Slide sub-heading adds context without competing</h2><h3>Slide section heading introduces the next block of detail</h3><p>Body text carries the explanation and includes a <strong>highlighted phrase</strong> to test emphasis.</p><p>It should feel calm and readable across a few consecutive sentences. This gives us a better way to judge density, rhythm, and overall comfort.</p><small>Small text supports caveats, provenance, and secondary guidance.</small></div></div>
+      </section>
+
+      <section class="theme-card">
+        <div class="theme-header"><h2 class="theme-title">02 — Midnight Blueprint / Merriweather</h2><p class="theme-path">Merriweather serif/sans variation of 01</p></div>
+        <div class="theme-meta">
+          <div class="meta-row"><div class="meta-label">Heading font</div><div class="meta-value">Merriweather</div></div>
+          <div class="meta-row"><div class="meta-label">Body font</div><div class="meta-value">Merriweather Sans</div></div>
+          <div class="meta-row"><div class="meta-label">Background</div><div class="meta-value">Same theme-01 background as 01</div></div>
+        </div>
+        <div class="swatches">
+          <div class="swatch"><div class="swatch-color" style="background:#0a0a0a"></div><div class="swatch-label"><div class="swatch-name">Background</div><div class="swatch-hex">#0a0a0a</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7b8fa8"></div><div class="swatch-label"><div class="swatch-name">Headings</div><div class="swatch-hex">#7b8fa8</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#bdd6f8"></div><div class="swatch-label"><div class="swatch-name">Highlight</div><div class="swatch-hex">#bdd6f8</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#f5f4f0"></div><div class="swatch-label"><div class="swatch-name">Body text</div><div class="swatch-hex">#f5f4f0</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#f5f4f066"></div><div class="swatch-label"><div class="swatch-name">Muted</div><div class="swatch-hex">#f5f4f066</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7eaf88"></div><div class="swatch-label"><div class="swatch-name">Success</div><div class="swatch-hex">#7eaf88</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#d09257"></div><div class="swatch-label"><div class="swatch-name">Warning</div><div class="swatch-hex">#d09257</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#c9777a"></div><div class="swatch-label"><div class="swatch-name">Error</div><div class="swatch-hex">#c9777a</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7b8fa8"></div><div class="swatch-label"><div class="swatch-name">Background image</div><div class="swatch-hex">#7b8fa8</div></div></div>
+        </div>
+        <div class="preview-wrap"><div class="mock-slide mini theme-02 bg-01"><div class="eyebrow">Type scale</div><h1>Slide title carries the main takeaway</h1><h2>Slide sub-heading adds context without competing</h2><h3>Slide section heading introduces the next block of detail</h3><p>Body text carries the explanation and includes a <strong>highlighted phrase</strong> to test emphasis.</p><p>It should feel calm and readable across a few consecutive sentences. This gives us a better way to judge density, rhythm, and overall comfort.</p><small>Small text supports caveats, provenance, and secondary guidance.</small></div></div>
+      </section>
+
+      <section class="theme-card">
+        <div class="theme-header"><h2 class="theme-title">03 — Midnight Blueprint / Source Serif</h2><p class="theme-path">Technical-serif variation of 01</p></div>
+        <div class="theme-meta">
+          <div class="meta-row"><div class="meta-label">Heading font</div><div class="meta-value">Merriweather</div></div>
+          <div class="meta-row"><div class="meta-label">Body font</div><div class="meta-value">Merriweather Sans</div></div>
+          <div class="meta-row"><div class="meta-label">Background</div><div class="meta-value">Same theme-01 background as 01</div></div>
+        </div>
+        <div class="swatches">
+          <div class="swatch"><div class="swatch-color" style="background:#0a0a0a"></div><div class="swatch-label"><div class="swatch-name">Background</div><div class="swatch-hex">#0a0a0a</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7b8fa8"></div><div class="swatch-label"><div class="swatch-name">Headings</div><div class="swatch-hex">#7b8fa8</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#bdd6f8"></div><div class="swatch-label"><div class="swatch-name">Highlight</div><div class="swatch-hex">#bdd6f8</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#f5f4f0"></div><div class="swatch-label"><div class="swatch-name">Body text</div><div class="swatch-hex">#f5f4f0</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#f5f4f066"></div><div class="swatch-label"><div class="swatch-name">Muted</div><div class="swatch-hex">#f5f4f066</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7eaf88"></div><div class="swatch-label"><div class="swatch-name">Success</div><div class="swatch-hex">#7eaf88</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#d09257"></div><div class="swatch-label"><div class="swatch-name">Warning</div><div class="swatch-hex">#d09257</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#c9777a"></div><div class="swatch-label"><div class="swatch-name">Error</div><div class="swatch-hex">#c9777a</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7b8fa8"></div><div class="swatch-label"><div class="swatch-name">Background image</div><div class="swatch-hex">#7b8fa8</div></div></div>
+        </div>
+        <div class="preview-wrap"><div class="mock-slide mini theme-03 bg-01"><div class="eyebrow">Type scale</div><h1>Slide title carries the main takeaway</h1><h2>Slide sub-heading adds context without competing</h2><h3>Slide section heading introduces the next block of detail</h3><p>Body text carries the explanation and includes a <strong>highlighted phrase</strong> to test emphasis.</p><p>It should feel calm and readable across a few consecutive sentences. This gives us a better way to judge density, rhythm, and overall comfort.</p><small>Small text supports caveats, provenance, and secondary guidance.</small></div></div>
+      </section>
+
+      <section class="theme-card">
+        <div class="theme-header"><h2 class="theme-title">04 — Midnight Blueprint / Baskerville</h2><p class="theme-path">Libre Baskerville / Source Sans 3 variation of 01</p></div>
+        <div class="theme-meta">
+          <div class="meta-row"><div class="meta-label">Heading font</div><div class="meta-value">Merriweather</div></div>
+          <div class="meta-row"><div class="meta-label">Body font</div><div class="meta-value">Merriweather Sans</div></div>
+          <div class="meta-row"><div class="meta-label">Background</div><div class="meta-value">Same theme-01 background as 01</div></div>
+        </div>
+        <div class="swatches">
+          <div class="swatch"><div class="swatch-color" style="background:#0a0a0a"></div><div class="swatch-label"><div class="swatch-name">Background</div><div class="swatch-hex">#0a0a0a</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7b8fa8"></div><div class="swatch-label"><div class="swatch-name">Headings</div><div class="swatch-hex">#7b8fa8</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#bdd6f8"></div><div class="swatch-label"><div class="swatch-name">Highlight</div><div class="swatch-hex">#bdd6f8</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#f5f4f0"></div><div class="swatch-label"><div class="swatch-name">Body text</div><div class="swatch-hex">#f5f4f0</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#f5f4f066"></div><div class="swatch-label"><div class="swatch-name">Muted</div><div class="swatch-hex">#f5f4f066</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7eaf88"></div><div class="swatch-label"><div class="swatch-name">Success</div><div class="swatch-hex">#7eaf88</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#d09257"></div><div class="swatch-label"><div class="swatch-name">Warning</div><div class="swatch-hex">#d09257</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#c9777a"></div><div class="swatch-label"><div class="swatch-name">Error</div><div class="swatch-hex">#c9777a</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7b8fa8"></div><div class="swatch-label"><div class="swatch-name">Background image</div><div class="swatch-hex">#7b8fa8</div></div></div>
+        </div>
+        <div class="preview-wrap"><div class="mock-slide mini theme-04 bg-01"><div class="eyebrow">Type scale</div><h1>Slide title carries the main takeaway</h1><h2>Slide sub-heading adds context without competing</h2><h3>Slide section heading introduces the next block of detail</h3><p>Body text carries the explanation and includes a <strong>highlighted phrase</strong> to test emphasis.</p><p>It should feel calm and readable across a few consecutive sentences. This gives us a better way to judge density, rhythm, and overall comfort.</p><small>Small text supports caveats, provenance, and secondary guidance.</small></div></div>
+      </section>
+
+      <section class="theme-card">
+        <div class="theme-header"><h2 class="theme-title">05 — Midnight Blueprint / Plex</h2><p class="theme-path">IBM Plex serif/sans variation of 01</p></div>
+        <div class="theme-meta">
+          <div class="meta-row"><div class="meta-label">Heading font</div><div class="meta-value">Merriweather</div></div>
+          <div class="meta-row"><div class="meta-label">Body font</div><div class="meta-value">Merriweather Sans</div></div>
+          <div class="meta-row"><div class="meta-label">Background</div><div class="meta-value">Same theme-01 background as 01</div></div>
+        </div>
+        <div class="swatches">
+          <div class="swatch"><div class="swatch-color" style="background:#0a0a0a"></div><div class="swatch-label"><div class="swatch-name">Background</div><div class="swatch-hex">#0a0a0a</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7b8fa8"></div><div class="swatch-label"><div class="swatch-name">Headings</div><div class="swatch-hex">#7b8fa8</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#bdd6f8"></div><div class="swatch-label"><div class="swatch-name">Highlight</div><div class="swatch-hex">#bdd6f8</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#f5f4f0"></div><div class="swatch-label"><div class="swatch-name">Body text</div><div class="swatch-hex">#f5f4f0</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#f5f4f066"></div><div class="swatch-label"><div class="swatch-name">Muted</div><div class="swatch-hex">#f5f4f066</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7eaf88"></div><div class="swatch-label"><div class="swatch-name">Success</div><div class="swatch-hex">#7eaf88</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#d09257"></div><div class="swatch-label"><div class="swatch-name">Warning</div><div class="swatch-hex">#d09257</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#c9777a"></div><div class="swatch-label"><div class="swatch-name">Error</div><div class="swatch-hex">#c9777a</div></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#7b8fa8"></div><div class="swatch-label"><div class="swatch-name">Background image</div><div class="swatch-hex">#7b8fa8</div></div></div>
+        </div>
+        <div class="preview-wrap"><div class="mock-slide mini theme-05 bg-01"><div class="eyebrow">Type scale</div><h1>Slide title carries the main takeaway</h1><h2>Slide sub-heading adds context without competing</h2><h3>Slide section heading introduces the next block of detail</h3><p>Body text carries the explanation and includes a <strong>highlighted phrase</strong> to test emphasis.</p><p>It should feel calm and readable across a few consecutive sentences. This gives us a better way to judge density, rhythm, and overall comfort.</p><small>Small text supports caveats, provenance, and secondary guidance.</small></div></div>
+      </section>
+    </main>
+
+    <section class="section-heading">
+      <h2>Full-width mock slides</h2>
+      <p>Large in-page previews focused on font hierarchy before spacing refinements.</p>
+    </section>
+
+    <section class="full-width-list">
+      <section class="full-card">
+        <div class="theme-header"><h2 class="theme-title">01 — Midnight Blueprint</h2><p class="theme-path">Favourite / deck default.</p></div>
+        <div class="theme-meta"><div class="meta-row"><div class="meta-label">Tone</div><div class="meta-value">Editorial, sturdy, readable, with a more bookish serif voice</div></div><div class="meta-row"><div class="meta-label">Works well for</div><div class="meta-value">Narrative reviews and serious internal decks that want stronger text readability</div></div><div class="meta-row"><div class="meta-label">Palette anchors</div><div class="meta-value">#0a0a0a · #7b8fa8 · #bdd6f8</div></div></div>
+        <div class="full-preview-wrap"><div class="mock-slide full theme-01 bg-01"><div class="eyebrow">Type scale</div><h1>Slide title carries the main takeaway</h1><h2>Slide sub-heading adds context without competing</h2><h3>Slide section heading introduces the next block of detail</h3><p>Body text carries the explanation and includes a <strong>highlighted phrase</strong> to test emphasis.</p><p>It should feel calm and readable across a few consecutive sentences. This gives us a better way to judge density, rhythm, and overall comfort.</p><small>Small text supports caveats, provenance, and secondary guidance.</small></div></div>
+      </section>
+
+      <section class="full-card">
+        <div class="theme-header"><h2 class="theme-title">02 — Midnight Blueprint / Merriweather</h2><p class="theme-path">Merriweather serif/sans variation of 01.</p></div>
+        <div class="theme-meta"><div class="meta-row"><div class="meta-label">Tone</div><div class="meta-value">Editorial, sturdy, readable, with a more bookish serif voice</div></div><div class="meta-row"><div class="meta-label">Works well for</div><div class="meta-value">Narrative reviews and serious internal decks that want stronger text readability</div></div><div class="meta-row"><div class="meta-label">Palette anchors</div><div class="meta-value">#0a0a0a · #7b8fa8 · #bdd6f8</div></div></div>
+        <div class="full-preview-wrap"><div class="mock-slide full theme-02 bg-01"><div class="eyebrow">Type scale</div><h1>Slide title carries the main takeaway</h1><h2>Slide sub-heading adds context without competing</h2><h3>Slide section heading introduces the next block of detail</h3><p>Body text carries the explanation and includes a <strong>highlighted phrase</strong> to test emphasis.</p><p>It should feel calm and readable across a few consecutive sentences. This gives us a better way to judge density, rhythm, and overall comfort.</p><small>Small text supports caveats, provenance, and secondary guidance.</small></div></div>
+      </section>
+
+      <section class="full-card">
+        <div class="theme-header"><h2 class="theme-title">03 — Midnight Blueprint / Source Serif</h2><p class="theme-path">Technical-serif variation of 01.</p></div>
+        <div class="theme-meta"><div class="meta-row"><div class="meta-label">Tone</div><div class="meta-value">Technical, precise, contemporary, slightly more formal than 01</div></div><div class="meta-row"><div class="meta-label">Works well for</div><div class="meta-value">Architecture reviews and system narratives that still want a serif headline</div></div><div class="meta-row"><div class="meta-label">Palette anchors</div><div class="meta-value">#0a0a0a · #7b8fa8 · #bdd6f8</div></div></div>
+        <div class="full-preview-wrap"><div class="mock-slide full theme-03 bg-01"><div class="eyebrow">Type scale</div><h1>Slide title carries the main takeaway</h1><h2>Slide sub-heading adds context without competing</h2><h3>Slide section heading introduces the next block of detail</h3><p>Body text carries the explanation and includes a <strong>highlighted phrase</strong> to test emphasis.</p><p>It should feel calm and readable across a few consecutive sentences. This gives us a better way to judge density, rhythm, and overall comfort.</p><small>Small text supports caveats, provenance, and secondary guidance.</small></div></div>
+      </section>
+
+      <section class="full-card">
+        <div class="theme-header"><h2 class="theme-title">04 — Midnight Blueprint / Baskerville</h2><p class="theme-path">Libre Baskerville / Source Sans 3 variation of 01.</p></div>
+        <div class="theme-meta"><div class="meta-row"><div class="meta-label">Tone</div><div class="meta-value">Classic, readable, editorial, with a steadier serif voice</div></div><div class="meta-row"><div class="meta-label">Works well for</div><div class="meta-value">Strategy decks and reflective reviews that need stronger long-form readability</div></div><div class="meta-row"><div class="meta-label">Palette anchors</div><div class="meta-value">#0a0a0a · #7b8fa8 · #bdd6f8</div></div></div>
+        <div class="full-preview-wrap"><div class="mock-slide full theme-04 bg-01"><div class="eyebrow">Type scale</div><h1>Slide title carries the main takeaway</h1><h2>Slide sub-heading adds context without competing</h2><h3>Slide section heading introduces the next block of detail</h3><p>Body text carries the explanation and includes a <strong>highlighted phrase</strong> to test emphasis.</p><p>It should feel calm and readable across a few consecutive sentences. This gives us a better way to judge density, rhythm, and overall comfort.</p><small>Small text supports caveats, provenance, and secondary guidance.</small></div></div>
+      </section>
+
+      <section class="full-card">
+        <div class="theme-header"><h2 class="theme-title">05 — Midnight Blueprint / Plex</h2><p class="theme-path">IBM Plex serif/sans variation of 01.</p></div>
+        <div class="theme-meta"><div class="meta-row"><div class="meta-label">Tone</div><div class="meta-value">Operational, rational, serious, with a clean systems feel</div></div><div class="meta-row"><div class="meta-label">Works well for</div><div class="meta-value">Internal technical briefings and decks that want a more engineered typographic voice</div></div><div class="meta-row"><div class="meta-label">Palette anchors</div><div class="meta-value">#0a0a0a · #7b8fa8 · #bdd6f8</div></div></div>
+        <div class="full-preview-wrap"><div class="mock-slide full theme-05 bg-01"><div class="eyebrow">Type scale</div><h1>Slide title carries the main takeaway</h1><h2>Slide sub-heading adds context without competing</h2><h3>Slide section heading introduces the next block of detail</h3><p>Body text carries the explanation and includes a <strong>highlighted phrase</strong> to test emphasis.</p><p>It should feel calm and readable across a few consecutive sentences. This gives us a better way to judge density, rhythm, and overall comfort.</p><small>Small text supports caveats, provenance, and secondary guidance.</small></div></div>
+      </section>
+    </section>
+
+    <section class="section-heading">
+      <h2>Shared background inspection</h2>
+      <p>All five variations now reuse the same theme-01 background so the typography differences are isolated.</p>
+    </section>
+
+    <section class="background-grid">
+      <section class="theme-card"><div class="theme-header"><h2 class="theme-title">01 — Midnight Blueprint</h2><p class="theme-path">Original background</p></div><div class="preview-wrap"><div class="background-panel bg-only-01"></div></div></section>
+      <section class="theme-card"><div class="theme-header"><h2 class="theme-title">02 — Editorial Steel</h2><p class="theme-path">Original theme-02 background</p></div><div class="preview-wrap"><div class="background-panel bg-only-02"></div></div></section>
+      <section class="theme-card"><div class="theme-header"><h2 class="theme-title">03 — Signal Lattice</h2><p class="theme-path">Original theme-03 background</p></div><div class="preview-wrap"><div class="background-panel bg-only-03"></div></div></section>
+      <section class="theme-card"><div class="theme-header"><h2 class="theme-title">04 — Archive Noir</h2><p class="theme-path">Original theme-04 background</p></div><div class="preview-wrap"><div class="background-panel bg-only-04"></div></div></section>
+      <section class="theme-card"><div class="theme-header"><h2 class="theme-title">05 — Control Plane</h2><p class="theme-path">Original theme-05 background</p></div><div class="preview-wrap"><div class="background-panel bg-only-05"></div></div></section>
+    </section>
+
+    <footer>
+      Open directly at <code>file:///C:/dev/pi2pi/poc/deck/assets/themes/showcase.html</code>.
+    </footer>
+  </body>
+</html>
