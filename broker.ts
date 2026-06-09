@@ -7,7 +7,7 @@
  * Protocol (JSON over WebSocket):
  *
  * Client → Broker:
- *   { type: "register", name: string, room: string }
+ *   { type: "register", name: string, room: string, displayName?: string, role?: string }
  *   { type: "message",  id: string, to: string, content: string }
  *   { type: "reply",    id: string, content: string }
  *   { type: "status",   state: "active"|"idle", model: string|null,
@@ -38,6 +38,8 @@ const port = portArg !== -1 ? parseInt(process.argv[portArg + 1] ?? String(DEFAU
 
 type AgentData = {
 	name: string | null;
+	displayName: string | null;
+	role: string | null;
 	room: string | null;
 	state: "active" | "idle" | null;
 	model: string | null;
@@ -66,19 +68,34 @@ function roomMembers(room: string): string[] {
 	return out;
 }
 
+function roomRoster(room: string): Array<{ name: string; displayName: string; role: string | null }> {
+	const out: Array<{ name: string; displayName: string; role: string | null }> = [];
+	for (const ws of agents.values()) {
+		if (ws.data.room === room && ws.data.name) {
+			out.push({
+				name: ws.data.name,
+				displayName: ws.data.displayName ?? ws.data.name,
+				role: ws.data.role,
+			});
+		}
+	}
+	return out;
+}
+
 function broadcastRoomList(room: string) {
 	const members = roomMembers(room);
+	const roster = roomRoster(room);
 	for (const ws of agents.values()) {
 		if (ws.data.room === room) {
-			send(ws, { type: "agent_list", agents: members, room });
+			send(ws, { type: "agent_list", agents: members, roster, room });
 		}
 	}
 }
 
 function broadcastAgentStatus(ws: ServerWebSocket<AgentData>) {
-	const { name, room, state, model, contextTokens, contextWindow, contextPercent } = ws.data;
+	const { name, displayName, role, room, state, model, contextTokens, contextWindow, contextPercent } = ws.data;
 	if (!name || !room) return;
-	const msg = { type: "agent_status", room, name, state, model, contextTokens, contextWindow, contextPercent };
+	const msg = { type: "agent_status", room, name, displayName, role, state, model, contextTokens, contextWindow, contextPercent };
 	for (const peer of agents.values()) {
 		if (peer.data.room === room) send(peer, msg);
 	}
@@ -186,6 +203,7 @@ function draw() {
 	// Gather rooms with full agent status data
 	type RoomEntry = {
 		name: string;
+		displayName: string;
 		state: "active" | "idle" | null;
 		model: string | null;
 		contextTokens: number | null;
@@ -199,6 +217,7 @@ function draw() {
 			const r = ws.data.room;
 			(rooms[r] ??= []).push({
 				name: ws.data.name,
+				displayName: ws.data.displayName ?? ws.data.name,
 				state: ws.data.state,
 				model: ws.data.model,
 				contextTokens: ws.data.contextTokens,
@@ -221,7 +240,7 @@ function draw() {
 
 		// ── Compute per-room column widths for alignment ─────────────────────
 		// name column: widest agent name
-		const nameWidth = Math.max(...entries.map(e => e.name.length));
+		const nameWidth = Math.max(...entries.map(e => e.displayName.length));
 		// model column: widest model string (or "—" placeholder)
 		const modelWidth = Math.max(...entries.map(e => (e.model ?? "—").length));
 		// token column: widest "tokens/window" string e.g. "52k/128k"
@@ -261,7 +280,7 @@ function draw() {
 			const tokStr = `${fmtTokens(e.contextTokens)}/${fmtTokens(e.contextWindow)}`.padEnd(tokWidth);
 
 			// Name column — padded to widest
-			const namePad = e.name.padEnd(nameWidth);
+			const namePad = e.displayName.padEnd(nameWidth);
 
 			const agentLine =
 				`    \u001B[90m${branch}\u001B[0m ` +
@@ -346,6 +365,8 @@ Bun.serve<AgentData>({
 				const r = ws.data.room ?? "(unknown)";
 				(rooms[r] ??= []).push({
 					name: ws.data.name ?? "(unknown)",
+					displayName: ws.data.displayName ?? ws.data.name ?? "(unknown)",
+					role: ws.data.role,
 					state: ws.data.state,
 					model: ws.data.model,
 					contextTokens: ws.data.contextTokens,
@@ -357,7 +378,7 @@ Bun.serve<AgentData>({
 		}
 		if (server.upgrade(req, {
 			data: {
-				name: null, room: null,
+				name: null, displayName: null, role: null, room: null,
 				state: null, model: null,
 				contextTokens: null, contextWindow: null, contextPercent: null,
 			},
@@ -378,9 +399,9 @@ Bun.serve<AgentData>({
 				return;
 			}
 
-			const { type, id, name, room, to, content } = msg as {
+			const { type, id, name, room, to, content, displayName, role } = msg as {
 				type?: string; id?: string; name?: string; room?: string;
-				to?: string; content?: string;
+				to?: string; content?: string; displayName?: string; role?: string;
 			};
 
 			switch (type) {
@@ -402,6 +423,8 @@ Bun.serve<AgentData>({
 					}
 
 					ws.data.name = n;
+					ws.data.displayName = displayName?.trim() || n;
+					ws.data.role = role?.trim() || null;
 					ws.data.room = r;
 					agents.set(key, ws);
 

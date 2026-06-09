@@ -2,23 +2,11 @@
  * Pi2Pi Extension
  *
  * Enables peer-to-peer messaging between pi instances via a shared broker.
- *
- * Usage:
- *   pi -e ./pi2pi.ts --agent-name Alice --room engineering
- *   pi -e ./pi2pi.ts --agent-name Bob   --room engineering
- *   pi -e ./pi2pi.ts --agent-name Alice --room engineering --broker ws://localhost:7331
- *
- * Commands:
- *   /tell <name> <message>      — send a message to a specific agent (fire-and-forget)
- *   /tell everyone <message>    — broadcast to all connected agents
- *   /replies                    — show messages still awaiting a reply
- *   /who                        — show who is currently connected
- *
- * Replies arrive automatically as follow-up messages; no polling required.
+ * Supports either a single room (`--room`) or multiple named room bindings
+ * (`--rooms team=engineering,leadership=leadership`).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { keyHint } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
@@ -27,6 +15,47 @@ const BROKER_DEFAULT = "ws://localhost:7331";
 const RECONNECT_DELAY_MS = 2000;
 const MAX_RECONNECT_ATTEMPTS = 20;
 
+type AgentState = "active" | "idle";
+
+type RoomMember = {
+	name: string;
+	displayName: string;
+	role: string | null;
+};
+
+type RoomConnection = {
+	alias: string;
+	room: string;
+	ws: WebSocket | null;
+	onlineAgents: string[];
+	roster: RoomMember[];
+	reconnectAttempts: number;
+};
+
+type ReplyEntry = {
+	id: string;
+	from: string;
+	content: string;
+	receivedAt: Date;
+	claimed: boolean;
+	roomAlias: string;
+};
+
+type PendingIncoming = {
+	id: string;
+	from: string;
+	roomAlias: string;
+};
+
+type SentEntry = {
+	id: string;
+	to: string;
+	message: string;
+	roomAlias: string;
+	sentAt: Date;
+	repliedAt?: Date;
+};
+
 export default function (pi: ExtensionAPI) {
 	// ── Flags ────────────────────────────────────────────────────────────────
 	pi.registerFlag("agent-name", {
@@ -34,7 +63,23 @@ export default function (pi: ExtensionAPI) {
 		type: "string",
 	});
 	pi.registerFlag("room", {
-		description: "Room to join — only agents in the same room can see and message each other",
+		description: "Single room to join (backwards-compatible alias for --rooms <room>)",
+		type: "string",
+	});
+	pi.registerFlag("display-name", {
+		description: "Optional human-friendly display name shown in broker UIs",
+		type: "string",
+	});
+	pi.registerFlag("agent-role", {
+		description: "Optional role label shown in broker UIs and room membership summaries",
+		type: "string",
+	});
+	pi.registerFlag("rooms", {
+		description: "Comma-separated room bindings, e.g. team=engineering,leadership=leadership",
+		type: "string",
+	});
+	pi.registerFlag("default-room", {
+		description: "Default room alias to use when tell/who omit a room",
 		type: "string",
 	});
 	pi.registerFlag("broker", {
@@ -43,150 +88,47 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ── State ────────────────────────────────────────────────────────────────
-	let ws: WebSocket | null = null;
 	let agentName: string | null = null;
-	let agentRoom: string | null = null;
 	let brokerUrl: string = BROKER_DEFAULT;
-	let reconnectAttempts = 0;
+	let defaultRoomAlias: string | null = null;
+	let displayName: string | null = null;
+	let agentRole: string | null = null;
 	let shutdownRequested = false;
 
-	// ui helpers captured from the most recent ctx
+	const roomConnections = new Map<string, RoomConnection>();
+
 	let uiNotify: ((msg: string, level: "info" | "warning" | "error" | "success") => void) | null = null;
 	let uiSetStatus: ((id: string, text: string | undefined) => void) | null = null;
 
-	// Agent instrumentation state — sent to broker as status updates.
 	let agentModel: string | null = null;
-	let agentState: "active" | "idle" = "idle";
+	let agentState: AgentState = "idle";
 	let getContextUsage: (() => { tokens: number | null; contextWindow: number; percent: number | null } | undefined) | null = null;
 
-	// Incoming messages awaiting a reply, keyed by message ID.
-	const incomingQueue = new Map<string, { id: string; from: string }>();
-
-	function enqueueIncoming(id: string, from: string) {
-		incomingQueue.set(id, { id, from });
-	}
-
-	function dequeueIncoming(id: string): { id: string; from: string } | undefined {
-		const item = incomingQueue.get(id);
-		if (item) incomingQueue.delete(id);
-		return item;
-	}
-
-	// Outgoing messages still awaiting a reply: id → { to, message, sentAt }
-	const pendingOutgoing = new Map<string, { to: string; message: string; sentAt: Date }>();
-
-	// Delivery confirmations: resolves silently on timeout, rejects immediately on broker error.
+	const incomingQueue = new Map<string, PendingIncoming>();
+	const pendingOutgoing = new Map<string, { to: string; message: string; sentAt: Date; roomAlias: string }>();
 	const pendingDelivery = new Map<string, { reject: (reason: string) => void; resolve: () => void }>();
-
-	// Full history of sent messages (capped at MAX_SENT_HISTORY, oldest dropped first).
-	const MAX_SENT_HISTORY = 100;
-	type SentEntry = { id: string; to: string; message: string; sentAt: Date; repliedAt?: Date };
 	const sentHistory = new Map<string, SentEntry>();
+	const replyBuffer = new Map<string, ReplyEntry>();
+	const replyWaiters = new Map<string, () => void>();
+	const readReplyMeta = new Map<string, { from: string; roomAlias: string }>();
+	let agentTurnActive = false;
 
-	function addToHistory(id: string, to: string, message: string) {
-		sentHistory.set(id, { id, to, message, sentAt: new Date() });
+	const MAX_SENT_HISTORY = 100;
+
+	function orderedConnections(): RoomConnection[] {
+		return [...roomConnections.values()];
+	}
+
+	function roomLabel(connection: RoomConnection): string {
+		return roomConnections.size === 1 ? `#${connection.room}` : `${connection.alias}(#${connection.room})`;
+	}
+
+	function addToHistory(id: string, to: string, message: string, roomAlias: string) {
+		sentHistory.set(id, { id, to, message, roomAlias, sentAt: new Date() });
 		if (sentHistory.size > MAX_SENT_HISTORY) {
 			sentHistory.delete(sentHistory.keys().next().value!);
 		}
 	}
-
-	// Buffer of received replies not yet consumed by read/wait.
-	type ReplyEntry = { id: string; from: string; content: string; receivedAt: Date; claimed: boolean };
-	const replyBuffer = new Map<string, ReplyEntry>();
-
-	// Resolvers registered by the wait tool, keyed by message id.
-	const replyWaiters = new Map<string, () => void>();
-
-	// True while an agent turn is in progress; used to decide whether to inject
-	// replies immediately or wait for the agent_end flush.
-	let agentTurnActive = false;
-
-	// Latest online agent list from the broker
-	let onlineAgents: string[] = [];
-
-	// ── Custom message renderers ─────────────────────────────────────────────
-
-	// "Asked @Bob: ..." — shown in the sender's conversation
-	pi.registerMessageRenderer("pi2pi-sent", (message, _options, theme) => {
-		const details = message.details as { to: string; broadcast?: boolean } | undefined;
-		const to = details?.to ?? "?";
-		const isBroadcast = details?.broadcast ?? false;
-		const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
-		const toLabel = isBroadcast ? theme.fg("warning", "everyone") : theme.fg("accent", to);
-		const label = theme.fg("muted", "Asked ") + toLabel + theme.fg("muted", ": ");
-		box.addChild(new Text(label + theme.fg("dim", message.content), 0, 0));
-		return box;
-	});
-
-	// "@Bob replied: ..." — the reply received from a remote agent
-	pi.registerMessageRenderer("pi2pi-reply", (message, { expanded }, theme) => {
-		const details = message.details as { from: string; full: string } | undefined;
-		const from = details?.from ?? "?";
-		const full = details?.full ?? message.content;
-		const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
-		const label = theme.fg("accent", `${from}`) + theme.fg("muted", " replied: ");
-		const preview = full.length > 300 && !expanded ? full.slice(0, 300) + "…" : full;
-		box.addChild(new Text(label + preview, 0, 0));
-		return box;
-	});
-
-	// "@Alice: ..." — an incoming request from another agent, shown in the recipient's session
-	pi.registerMessageRenderer("pi2pi-incoming", (message, { expanded }, theme) => {
-		const details = message.details as { from: string; message: string } | undefined;
-		const from = details?.from ?? "?";
-		const full = details?.message ?? message.content;
-		const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
-		const label = theme.fg("accent", `${from}`) + theme.fg("muted", ": ");
-		const preview = full.length > 300 && !expanded ? full.slice(0, 300) + "…" : full;
-		box.addChild(new Text(label + preview, 0, 0));
-		return box;
-	});
-
-	// "📨 Sent messages" — shown by /replies command
-	pi.registerMessageRenderer("pi2pi-pending", (message, _options, theme) => {
-		const details = message.details as { messages: Array<{ id: string; to: string; message: string; sentAt: string; repliedAt?: string }> } | undefined;
-		const messages = details?.messages ?? [];
-		const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
-		if (messages.length === 0) {
-			box.addChild(new Text(theme.fg("muted", "No messages sent yet."), 0, 0));
-		} else {
-			const header = theme.fg("accent", `📨 Sent messages (${messages.length})`) + "\n";
-			const lines = messages.map((p) => {
-				const status = p.repliedAt ? theme.fg("success", "✓") : theme.fg("warning", "⏳");
-				const time = p.repliedAt
-					? theme.fg("muted", `replied ${new Date(p.repliedAt).toLocaleTimeString()}`)
-					: theme.fg("muted", `sent ${new Date(p.sentAt).toLocaleTimeString()}`);
-				return status + " " +
-					theme.fg("accent", p.to) +
-					theme.fg("dim", ` [id: ${p.id}]`) +
-					theme.fg("muted", ` — "${p.message}" (`) +
-					time +
-					theme.fg("muted", ")");
-			});
-			box.addChild(new Text(header + lines.join("\n"), 0, 0));
-		}
-		return box;
-	});
-
-	// "/who" roster display
-	pi.registerMessageRenderer("pi2pi-who", (message, _options, theme) => {
-		const details = message.details as { self: string; room: string; others: string[] } | undefined;
-		const self = details?.self ?? "?";
-		const room = details?.room ?? "?";
-		const others = details?.others ?? [];
-		const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
-		let text = theme.fg("accent", `👥 Room: #${room}`) + theme.fg("muted", "\n");
-		text += theme.fg("success", "  ● ") + theme.fg("accent", self) + theme.fg("dim", " (you)\n");
-		if (others.length === 0) {
-			text += theme.fg("muted", "  (no other agents online)");
-		} else {
-			text += others.map((n) => theme.fg("success", "  ● ") + n).join("\n");
-		}
-		box.addChild(new Text(text, 0, 0));
-		return box;
-	});
-
-	// ── Status / notify helpers ───────────────────────────────────────────────
 
 	function notify(msg: string, level: "info" | "warning" | "error" | "success" = "info") {
 		uiNotify?.(msg, level);
@@ -196,71 +138,153 @@ export default function (pi: ExtensionAPI) {
 		uiSetStatus?.("pi2pi", text);
 	}
 
-	function sendStatus() {
-		if (!ws || ws.readyState !== WebSocket.OPEN || !agentName) return;
-		const usage = getContextUsage?.();
-		ws.send(JSON.stringify({
-			type: "status",
-			state: agentState,
-			model: agentModel,
-			contextTokens: usage?.tokens ?? null,
-			contextWindow: usage?.contextWindow ?? null,
-			contextPercent: usage?.percent ?? null,
-		}));
+	function normalizeRoomInput(input: string): string {
+		return input.trim().replace(/^#/, "");
+	}
+
+	function tryResolveRoom(input: string): RoomConnection | null {
+		const normalized = normalizeRoomInput(input);
+		const byAlias = roomConnections.get(normalized);
+		if (byAlias) return byAlias;
+		return orderedConnections().find(connection => connection.room === normalized) ?? null;
+	}
+
+	function resolveRoom(input?: string): RoomConnection {
+		if (input?.trim()) {
+			const resolved = tryResolveRoom(input.trim());
+			if (!resolved) throw new Error(`Pi2Pi: unknown room alias or room name \"${input}\"`);
+			return resolved;
+		}
+		if (!defaultRoomAlias) throw new Error("Pi2Pi: no default room configured");
+		const resolved = roomConnections.get(defaultRoomAlias);
+		if (!resolved) throw new Error(`Pi2Pi: default room alias \"${defaultRoomAlias}\" is not connected`);
+		return resolved;
+	}
+
+	function parseRoomBindings(): { bindings: Array<{ alias: string; room: string }>; defaultAlias: string } {
+		const roomsFlag = (pi.getFlag("rooms") as string | undefined)?.trim();
+		const roomFlag = (pi.getFlag("room") as string | undefined)?.trim();
+		const spec = roomsFlag || roomFlag;
+		if (!spec) throw new Error("Pi2Pi: restart with --room <room> or --rooms <alias=room,...>");
+
+		const bindings = spec
+			.split(",")
+			.map(item => item.trim())
+			.filter(Boolean)
+			.map(item => {
+				const eq = item.indexOf("=");
+				if (eq === -1) return { alias: item, room: item };
+				return {
+					alias: item.slice(0, eq).trim(),
+					room: item.slice(eq + 1).trim(),
+				};
+			});
+
+		if (bindings.length === 0) throw new Error("Pi2Pi: no valid room bindings were parsed");
+		for (const binding of bindings) {
+			if (!binding.alias || !binding.room) throw new Error(`Pi2Pi: invalid room binding \"${binding.alias}=${binding.room}\"`);
+		}
+		const aliases = new Set<string>();
+		for (const binding of bindings) {
+			if (aliases.has(binding.alias)) throw new Error(`Pi2Pi: duplicate room alias \"${binding.alias}\"`);
+			aliases.add(binding.alias);
+		}
+
+		const explicitDefault = (pi.getFlag("default-room") as string | undefined)?.trim();
+		if (explicitDefault) {
+			const resolved = bindings.find(binding => binding.alias === explicitDefault || binding.room === explicitDefault);
+			if (!resolved) throw new Error(`Pi2Pi: default room \"${explicitDefault}\" is not one of the configured room bindings`);
+			return { bindings, defaultAlias: resolved.alias };
+		}
+
+		return { bindings, defaultAlias: bindings[0].alias };
+	}
+
+	function configureRooms(bindings: Array<{ alias: string; room: string }>, defaultAlias: string) {
+		roomConnections.clear();
+		for (const binding of bindings) {
+			roomConnections.set(binding.alias, {
+				alias: binding.alias,
+				room: binding.room,
+				ws: null,
+				onlineAgents: [],
+				roster: [],
+				reconnectAttempts: 0,
+			});
+		}
+		defaultRoomAlias = defaultAlias;
+	}
+
+	function formatMember(member: RoomMember): string {
+		return member.role ? `${member.displayName} (${member.role})` : member.displayName;
+	}
+
+	function resolveTargetName(connection: RoomConnection, requested: string): string {
+		const trimmed = requested.trim();
+		if (!trimmed) throw new Error("Pi2Pi: target name cannot be empty");
+		if (trimmed === "everyone") return trimmed;
+		if (connection.onlineAgents.includes(trimmed)) return trimmed;
+
+		const normalized = trimmed.replace(/\s*\([^)]*\)\s*$/, "").trim().toLowerCase();
+		const matches = connection.roster.filter(member => {
+			const display = member.displayName.trim().toLowerCase();
+			const withRole = formatMember(member).trim().toLowerCase();
+			return display === normalized || withRole === trimmed.toLowerCase() || display === trimmed.toLowerCase();
+		});
+
+		if (matches.length === 1) return matches[0].name;
+		if (matches.length > 1) {
+			throw new Error(`Pi2Pi: target \"${requested}\" is ambiguous in ${roomLabel(connection)}; matches: ${matches.map(formatMember).join(", ")}`);
+		}
+		return trimmed;
 	}
 
 	function refreshStatus() {
-		if (!agentName || !agentRoom) return;
-		const others = onlineAgents.filter((n) => n !== agentName);
-		const peers = others.length ? ` [${others.join(", ")}]` : "";
-		const waiting = pendingOutgoing.size ? ` ⏳×${pendingOutgoing.size}` : "";
-		setStatus(`● ${agentName} #${agentRoom}${peers}${waiting}`);
+		if (!agentName) return;
+		const identity = `${displayName ?? agentName}${agentRole ? ` (${agentRole})` : ""}`;
+		const roomSummary = orderedConnections().map(connection => {
+			const others = connection.roster.filter(member => member.name !== agentName);
+			const membersText = others.length > 0
+				? others.map(formatMember).join(", ")
+				: "";
+			return `${connection.room}: [${membersText}]`;
+		}).join(" | ");
+		const waiting = pendingOutgoing.size ? ` | waiting: ${pendingOutgoing.size}` : "";
+		setStatus(`● ${identity}${roomSummary ? ` | ${roomSummary}` : ""}${waiting}`);
 	}
 
-	// ── WebSocket / broker ────────────────────────────────────────────────────
-
-	function connectToBroker() {
-		if (shutdownRequested || !agentName) return;
-
-		try {
-			ws = new WebSocket(brokerUrl);
-		} catch {
-			scheduleReconnect();
-			return;
+	function sendStatus() {
+		const usage = getContextUsage?.();
+		for (const connection of orderedConnections()) {
+			if (!connection.ws || connection.ws.readyState !== WebSocket.OPEN || !agentName) continue;
+			connection.ws.send(JSON.stringify({
+				type: "status",
+				state: agentState,
+				model: agentModel,
+				contextTokens: usage?.tokens ?? null,
+				contextWindow: usage?.contextWindow ?? null,
+				contextPercent: usage?.percent ?? null,
+			}));
 		}
-
-		ws.addEventListener("open", () => {
-			reconnectAttempts = 0;
-			ws!.send(JSON.stringify({ type: "register", name: agentName, room: agentRoom }));
-		});
-
-		ws.addEventListener("message", (event) => {
-			handleBrokerMessage(String(event.data));
-		});
-
-		ws.addEventListener("close", () => {
-			ws = null;
-			if (!shutdownRequested) {
-				setStatus(`⚠ ${agentName} — disconnected`);
-				scheduleReconnect();
-			}
-		});
 	}
 
-	function scheduleReconnect() {
+	function scheduleReconnect(connection: RoomConnection) {
 		if (shutdownRequested) return;
-		reconnectAttempts++;
-		if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-			setStatus(`✖ ${agentName} — broker unreachable`);
+		connection.reconnectAttempts++;
+		if (connection.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+			setStatus(`✖ ${agentName} — broker unreachable (${connection.alias})`);
 			return;
 		}
-		const delay = Math.min(RECONNECT_DELAY_MS * reconnectAttempts, 30_000);
+		const delay = Math.min(RECONNECT_DELAY_MS * connection.reconnectAttempts, 30_000);
 		setTimeout(() => {
-			if (!shutdownRequested) connectToBroker();
+			if (!shutdownRequested) connectToBroker(connection);
 		}, delay);
 	}
 
-	function handleBrokerMessage(rawData: string) {
+	function handleBrokerMessage(roomAlias: string, rawData: string) {
+		const connection = roomConnections.get(roomAlias);
+		if (!connection) return;
+
 		let msg: Record<string, unknown>;
 		try {
 			msg = JSON.parse(rawData);
@@ -268,53 +292,59 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const { type, id, name, from, content, agents, reason } = msg as {
+		const { type, id, name, from, content, agents, roster, reason } = msg as {
 			type?: string;
 			id?: string;
 			name?: string;
 			from?: string;
 			content?: string;
 			agents?: string[];
+			roster?: Array<{ name?: string; displayName?: string; role?: string | null }>;
 			reason?: string;
 		};
 
 		switch (type) {
-			// ── Broker acknowledged our registration ─────────────────────────
 			case "registered": {
-				notify(`Registered as "${name}" in room "${agentRoom}" on ${brokerUrl}`, "success");
+				connection.reconnectAttempts = 0;
+				notify(`Registered as \"${name}\" in ${roomLabel(connection)} on ${brokerUrl}`, "success");
 				refreshStatus();
-				// Send initial idle status so the broker dashboard has data immediately.
 				sendStatus();
 				break;
 			}
 
-			// ── Updated roster of connected agents ───────────────────────────
 			case "agent_list": {
-				onlineAgents = agents ?? [];
+				connection.onlineAgents = agents ?? [];
+				connection.roster = (roster ?? []).flatMap(member => {
+					if (!member.name) return [];
+					return [{
+						name: member.name,
+						displayName: member.displayName?.trim() || member.name,
+						role: member.role ?? null,
+					}];
+				});
+				if (connection.roster.length === 0) {
+					connection.roster = connection.onlineAgents.map(memberName => ({
+						name: memberName,
+						displayName: memberName,
+						role: null,
+					}));
+				}
 				refreshStatus();
 				break;
 			}
 
-			// ── Incoming message from another agent ──────────────────────────
 			case "incoming": {
 				if (!id || !from || content === undefined) return;
-
-				// Enqueue so agent_end can correlate each reply turn with the right message id.
-				enqueueIncoming(id, from);
-
-				// Use sendMessage (not sendUserMessage) so the styled pi2pi-incoming renderer
-				// is used. triggerTurn starts an agent turn so the LLM generates a reply.
-				// deliverAs followUp ensures messages are processed in arrival order.
+				incomingQueue.set(id, { id, from, roomAlias });
 				pi.sendMessage({
 					customType: "pi2pi-incoming",
-					content: `Message from ${from} [id: ${id}]: ${content}\n\nUse the reply tool with id="${id}" to send your response.`,
+					content: `Message from ${from} in ${roomLabel(connection)} [id: ${id}]: ${content}\n\nUse the reply tool with id=\"${id}\" to send your response.`,
 					display: true,
-					details: { from, message: content },
+					details: { from, message: content, roomLabel: roomLabel(connection) },
 				}, { triggerTurn: true, deliverAs: "followUp" });
 				break;
 			}
 
-			// ── Reply came back for one of our outgoing messages ─────────────
 			case "reply_result": {
 				if (!id || !from || content === undefined) return;
 				pendingOutgoing.delete(id);
@@ -322,26 +352,27 @@ export default function (pi: ExtensionAPI) {
 				if (histEntry) histEntry.repliedAt = new Date();
 				refreshStatus();
 
-				// Store in buffer. Delivery to the LLM happens either via the read tool
-				// (claimed explicitly), the agent_end flush (unclaimed, turn active),
-				// or immediately if no turn is currently active.
-				const entry: ReplyEntry = { id, from, content, receivedAt: new Date(), claimed: false };
+				const entry: ReplyEntry = {
+					id,
+					from,
+					content,
+					receivedAt: new Date(),
+					claimed: false,
+					roomAlias,
+				};
 
-				// Signal any wait tool that is blocking on this id.
 				const waiter = replyWaiters.get(id);
 				if (waiter) {
 					replyWaiters.delete(id);
 					replyBuffer.set(id, entry);
 					waiter();
 				} else if (!agentTurnActive) {
-					// Agent is idle — inject immediately so it doesn't wait for a
-					// user message to trigger the next agent_end flush.
 					entry.claimed = true;
 					pi.sendMessage({
 						customType: "pi2pi-reply",
-						content: `[Incoming message received from ${from}, id: ${id}]\n${from}: ${content}`,
+						content: `[Incoming message received from ${from} in ${roomLabel(connection)}, id: ${id}]\n${from}: ${content}`,
 						display: true,
-						details: { from, full: content },
+						details: { from, full: content, roomLabel: roomLabel(connection) },
 					}, { triggerTurn: true, deliverAs: "followUp" });
 				} else {
 					replyBuffer.set(id, entry);
@@ -349,13 +380,10 @@ export default function (pi: ExtensionAPI) {
 				break;
 			}
 
-			// ── Error from broker ────────────────────────────────────────────
 			case "error": {
 				const forId = id ? ` (id ${id})` : "";
-				notify(`Broker error${forId}: ${reason ?? "unknown"}`, "error");
-
+				notify(`Broker error in ${roomLabel(connection)}${forId}: ${reason ?? "unknown"}`, "error");
 				if (id) {
-					// Reject the delivery promise so the tell tool throws immediately.
 					pendingDelivery.get(id)?.reject(reason ?? "unknown error");
 					pendingDelivery.delete(id);
 					pendingOutgoing.delete(id);
@@ -366,35 +394,151 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	function connectToBroker(connection: RoomConnection) {
+		if (shutdownRequested || !agentName) return;
+
+		let ws: WebSocket;
+		try {
+			ws = new WebSocket(brokerUrl);
+		} catch {
+			scheduleReconnect(connection);
+			return;
+		}
+
+		connection.ws = ws;
+		ws.addEventListener("open", () => {
+			connection.reconnectAttempts = 0;
+			ws.send(JSON.stringify({ type: "register", name: agentName, room: connection.room, displayName, role: agentRole }));
+		});
+		ws.addEventListener("message", event => {
+			handleBrokerMessage(connection.alias, String((event as { data?: unknown }).data));
+		});
+		ws.addEventListener("close", () => {
+			connection.ws = null;
+			connection.onlineAgents = [];
+			connection.roster = [];
+			refreshStatus();
+			if (!shutdownRequested) {
+				setStatus(`⚠ ${agentName} — disconnected from ${connection.alias}`);
+				scheduleReconnect(connection);
+			}
+		});
+	}
+
+	// ── Custom message renderers ─────────────────────────────────────────────
+
+	pi.registerMessageRenderer("pi2pi-sent", (message, _options, theme) => {
+		const details = message.details as { to: string; broadcast?: boolean; roomLabel?: string } | undefined;
+		const to = details?.to ?? "?";
+		const roomText = details?.roomLabel ? theme.fg("muted", ` ${details.roomLabel}`) : "";
+		const isBroadcast = details?.broadcast ?? false;
+		const box = new Box(1, 1, t => theme.bg("customMessageBg", t));
+		const toLabel = isBroadcast ? theme.fg("warning", "everyone") : theme.fg("accent", to);
+		const label = theme.fg("muted", "Asked ") + toLabel + roomText + theme.fg("muted", ": ");
+		box.addChild(new Text(label + theme.fg("dim", message.content), 0, 0));
+		return box;
+	});
+
+	pi.registerMessageRenderer("pi2pi-reply", (message, { expanded }, theme) => {
+		const details = message.details as { from: string; full: string; roomLabel?: string } | undefined;
+		const from = details?.from ?? "?";
+		const full = details?.full ?? message.content;
+		const roomText = details?.roomLabel ? theme.fg("muted", ` ${details.roomLabel}`) : "";
+		const box = new Box(1, 1, t => theme.bg("customMessageBg", t));
+		const label = theme.fg("accent", `${from}`) + roomText + theme.fg("muted", " replied: ");
+		const preview = full.length > 300 && !expanded ? full.slice(0, 300) + "…" : full;
+		box.addChild(new Text(label + preview, 0, 0));
+		return box;
+	});
+
+	pi.registerMessageRenderer("pi2pi-incoming", (message, { expanded }, theme) => {
+		const details = message.details as { from: string; message: string; roomLabel?: string } | undefined;
+		const from = details?.from ?? "?";
+		const full = details?.message ?? message.content;
+		const roomText = details?.roomLabel ? theme.fg("muted", ` ${details.roomLabel}`) : "";
+		const box = new Box(1, 1, t => theme.bg("customMessageBg", t));
+		const label = theme.fg("accent", `${from}`) + roomText + theme.fg("muted", ": ");
+		const preview = full.length > 300 && !expanded ? full.slice(0, 300) + "…" : full;
+		box.addChild(new Text(label + preview, 0, 0));
+		return box;
+	});
+
+	pi.registerMessageRenderer("pi2pi-pending", (message, _options, theme) => {
+		const details = message.details as { messages: Array<{ id: string; to: string; message: string; roomAlias: string; sentAt: string; repliedAt?: string }> } | undefined;
+		const messages = details?.messages ?? [];
+		const box = new Box(1, 1, t => theme.bg("customMessageBg", t));
+		if (messages.length === 0) {
+			box.addChild(new Text(theme.fg("muted", "No messages sent yet."), 0, 0));
+		} else {
+			const header = theme.fg("accent", `📨 Sent messages (${messages.length})`) + "\n";
+			const lines = messages.map(p => {
+				const status = p.repliedAt ? theme.fg("success", "✓") : theme.fg("warning", "⏳");
+				const time = p.repliedAt
+					? theme.fg("muted", `replied ${new Date(p.repliedAt).toLocaleTimeString()}`)
+					: theme.fg("muted", `sent ${new Date(p.sentAt).toLocaleTimeString()}`);
+				return status + " " +
+					theme.fg("accent", p.to) +
+					theme.fg("dim", ` [${p.roomAlias}, id: ${p.id}]`) +
+					theme.fg("muted", ` — \"${p.message}\" (`) +
+					time +
+					theme.fg("muted", ")");
+			});
+			box.addChild(new Text(header + lines.join("\n"), 0, 0));
+		}
+		return box;
+	});
+
+	pi.registerMessageRenderer("pi2pi-who", (message, _options, theme) => {
+		const details = message.details as { self: string; roomLabel: string; members: Array<{ displayName: string; role?: string | null; self?: boolean }> } | undefined;
+		const self = details?.self ?? "?";
+		const roomLabelText = details?.roomLabel ?? "?";
+		const members = details?.members ?? [];
+		const box = new Box(1, 1, t => theme.bg("customMessageBg", t));
+		let text = theme.fg("accent", `👥 Room: ${roomLabelText}`) + theme.fg("muted", "\n");
+		if (members.length === 0) {
+			text += theme.fg("muted", `  ● ${self} (you)`);
+		} else {
+			text += members.map(member => {
+				const suffix = member.self ? " (you)" : "";
+				const role = member.role ? ` — ${member.role}` : "";
+				return theme.fg("success", "  ● ") + theme.fg("accent", member.displayName) + theme.fg("dim", `${role}${suffix}`);
+			}).join("\n");
+		}
+		box.addChild(new Text(text, 0, 0));
+		return box;
+	});
+
 	// ── Lifecycle events ──────────────────────────────────────────────────────
 
 	pi.on("session_start", async (_event, ctx) => {
 		shutdownRequested = false;
-		reconnectAttempts = 0;
 		uiNotify = ctx.ui.notify.bind(ctx.ui);
 		uiSetStatus = ctx.ui.setStatus.bind(ctx.ui);
 		agentModel = ctx.model ? (ctx.model.name || ctx.model.id) : null;
 		getContextUsage = ctx.getContextUsage.bind(ctx);
-
 		brokerUrl = ((pi.getFlag("broker") as string | undefined) ?? BROKER_DEFAULT).trim();
 
-		// Use --agent-name flag if supplied, otherwise show a persistent error and disable
 		const flagName = (pi.getFlag("agent-name") as string | undefined)?.trim();
 		if (!flagName) {
 			ctx.ui.setStatus("pi2pi", "✖ pi2pi — restart with --agent-name <name>");
 			return;
 		}
 		agentName = flagName;
+		displayName = ((pi.getFlag("display-name") as string | undefined)?.trim()) || agentName;
+		agentRole = ((pi.getFlag("agent-role") as string | undefined)?.trim()) || null;
 
-		const flagRoom = (pi.getFlag("room") as string | undefined)?.trim();
-		if (!flagRoom) {
-			ctx.ui.setStatus("pi2pi", "✖ pi2pi — restart with --room <room>");
+		try {
+			const parsed = parseRoomBindings();
+			configureRooms(parsed.bindings, parsed.defaultAlias);
+		} catch (error) {
+			ctx.ui.setStatus("pi2pi", `✖ ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
-		agentRoom = flagRoom;
 
-		ctx.ui.setStatus("pi2pi", `○ ${agentName} #${agentRoom} — connecting…`);
-		connectToBroker();
+		ctx.ui.setStatus("pi2pi", `○ ${agentName} — connecting…`);
+		for (const connection of orderedConnections()) {
+			connectToBroker(connection);
+		}
 	});
 
 	pi.on("session_shutdown", async () => {
@@ -405,31 +549,30 @@ export default function (pi: ExtensionAPI) {
 		agentState = "idle";
 		getContextUsage = null;
 		agentName = null;
-		agentRoom = null;
+		displayName = null;
+		agentRole = null;
+		defaultRoomAlias = null;
 		incomingQueue.clear();
 		pendingOutgoing.clear();
 		pendingDelivery.clear();
 		sentHistory.clear();
 		replyBuffer.clear();
 		readReplyMeta.clear();
-		// Reject any in-flight wait calls so they don't hang forever.
-		for (const resolve of replyWaiters.values()) resolve(); // resolving is safe; wait checks buffer
+		for (const resolve of replyWaiters.values()) resolve();
 		replyWaiters.clear();
-		onlineAgents = [];
-		if (ws) {
-			try {
-				ws.close();
-			} catch {}
-			ws = null;
+		for (const connection of orderedConnections()) {
+			connection.onlineAgents = [];
+			connection.roster = [];
+			if (connection.ws) {
+				try {
+					connection.ws.close();
+				} catch {}
+				connection.ws = null;
+			}
 		}
+		roomConnections.clear();
 	});
 
-
-
-	// ── Flush unclaimed replies at the end of each agent turn ────────────────
-	// Replies are always buffered first. If the agent used wait+read they will
-	// have been claimed already. Any that weren't are injected here as follow-up
-	// turns so the agent still sees them on the next turn.
 	pi.on("agent_start", async (_event, ctx) => {
 		agentTurnActive = true;
 		agentState = "active";
@@ -451,59 +594,51 @@ export default function (pi: ExtensionAPI) {
 		for (const [id, entry] of replyBuffer) {
 			replyBuffer.delete(id);
 			if (entry.claimed) continue;
+			const connection = roomConnections.get(entry.roomAlias);
 			pi.sendMessage({
 				customType: "pi2pi-reply",
-				content: `[Incoming message received from ${entry.from}, id: ${entry.id}]\n${entry.from}: ${entry.content}`,
+				content: `[Incoming message received from ${entry.from} in ${connection ? roomLabel(connection) : entry.roomAlias}, id: ${entry.id}]\n${entry.from}: ${entry.content}`,
 				display: true,
-				details: { from: entry.from, full: entry.content },
+				details: { from: entry.from, full: entry.content, roomLabel: connection ? roomLabel(connection) : entry.roomAlias },
 			}, { triggerTurn: true, deliverAs: "followUp" });
 		}
 	});
 
-	// ── Tools (callable by the LLM) ───────────────────────────────────────────
+	// ── Tools ────────────────────────────────────────────────────────────────
 
 	pi.registerTool({
 		name: "tell",
 		label: "Tell",
-		description:
-			"Send a message to another agent and return immediately — do not wait. " +
-			"The reply will arrive automatically as a follow-up message when ready. " +
-			"Use the replies tool only to check what is still outstanding.",
+		description: "Send a message to another agent and return immediately. If you are in multiple rooms, specify the room alias.",
 		promptSnippet: "Send a message to another pi agent (fire-and-forget; reply arrives automatically)",
 		parameters: Type.Object({
-			to: Type.String({ description: 'Agent name to message, or "everyone" to broadcast to all connected agents' }),
+			to: Type.String({ description: 'Agent name to message, or "everyone" to broadcast to all connected agents in the selected room' }),
 			message: Type.String({ description: "Message to send" }),
+			room: Type.Optional(Type.String({ description: "Optional room alias or room name to send into" })),
 		}),
 		renderCall(args, theme, context) {
 			const t = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			let content = theme.fg("muted", "Asked ") + theme.fg("accent", args.to);
-			if (context.expanded) {
-				content += theme.fg("muted", ": ") + theme.fg("dim", args.message);
-			} else {
-				content += theme.fg("muted", "…");
-			}
+			const roomText = args.room ? theme.fg("muted", ` ${args.room}`) : "";
+			let content = theme.fg("muted", "Asked ") + theme.fg("accent", args.to) + roomText;
+			content += context.expanded ? theme.fg("muted", ": ") + theme.fg("dim", args.message) : theme.fg("muted", "…");
 			t.setText(content);
 			return t;
 		},
 		renderResult(_result, _options, theme) {
-			// Visually suppress the result — the call row already shows everything.
-			// The tool result text is still present in the LLM context unchanged.
 			return new Text(theme.fg("muted", "✓"), 0, 0);
 		},
 		async execute(_toolCallId, params) {
 			if (!agentName) throw new Error("Pi2Pi: --agent-name flag is required");
-			if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("Pi2Pi: not connected to broker");
+			const connection = resolveRoom(params.room);
+			if (!connection.ws || connection.ws.readyState !== WebSocket.OPEN) {
+				throw new Error(`Pi2Pi: not connected to broker for ${roomLabel(connection)}`);
+			}
 
 			const targets = params.to === "everyone"
-				? onlineAgents.filter((n) => n !== agentName)
-				: [params.to];
+				? connection.onlineAgents.filter(name => name !== agentName)
+				: [resolveTargetName(connection, params.to)];
+			if (targets.length === 0) throw new Error(`Pi2Pi: no other agents are connected in ${roomLabel(connection)}`);
 
-			if (targets.length === 0) throw new Error("Pi2Pi: no other agents are connected");
-
-			// Send each message and register a short-lived delivery promise.
-			// The promise rejects immediately if the broker returns an error (e.g. unknown
-			// agent name), or resolves silently after a timeout, after which the actual
-			// reply will arrive asynchronously as a follow-up message.
 			const DELIVERY_TIMEOUT_MS = 2000;
 			const sent: { target: string; msgId: string }[] = [];
 			const deliveryPromises: Promise<void>[] = [];
@@ -511,10 +646,9 @@ export default function (pi: ExtensionAPI) {
 			for (const target of targets) {
 				const msgId = randomUUID();
 				sent.push({ target, msgId });
-				pendingOutgoing.set(msgId, { to: target, message: params.message, sentAt: new Date() });
-				addToHistory(msgId, target, params.message);
-				ws!.send(JSON.stringify({ type: "message", id: msgId, to: target, content: params.message }));
-
+				pendingOutgoing.set(msgId, { to: target, message: params.message, sentAt: new Date(), roomAlias: connection.alias });
+				addToHistory(msgId, target, params.message, connection.alias);
+				connection.ws.send(JSON.stringify({ type: "message", id: msgId, to: target, content: params.message }));
 				deliveryPromises.push(new Promise<void>((resolve, reject) => {
 					pendingDelivery.set(msgId, { resolve, reject });
 					setTimeout(() => {
@@ -529,27 +663,19 @@ export default function (pi: ExtensionAPI) {
 
 			const results = await Promise.allSettled(deliveryPromises);
 			const failures = results
-				.map((r, i) => r.status === "rejected" ? `${sent[i].target}: ${r.reason}` : null)
+				.map((result, index) => result.status === "rejected" ? `${sent[index].target}: ${result.reason}` : null)
 				.filter(Boolean) as string[];
-
 			if (failures.length > 0) throw new Error(failures.join("; "));
 
 			const targetList = sent.map(({ target, msgId }) => `${target} [id: ${msgId}]`).join(", ");
-			return {
-				content: [{
-					type: "text",
-					text: `Message sent to ${targetList}.`,
-				}],
-			};
+			return { content: [{ type: "text", text: `Message sent to ${targetList} in ${roomLabel(connection)}.` }] };
 		},
 	});
 
 	pi.registerTool({
 		name: "replies",
 		label: "Replies",
-		description:
-			"Show all messages you have sent, with their status (replied or awaiting reply). " +
-			"Replies arrive automatically in your conversation — you do not need to call this to receive them.",
+		description: "Show all messages you have sent, with their status and room.",
 		promptSnippet: "Show all sent messages and whether replies have been received",
 		parameters: Type.Object({}),
 		async execute() {
@@ -557,29 +683,19 @@ export default function (pi: ExtensionAPI) {
 			if (sentHistory.size === 0) {
 				return { content: [{ type: "text", text: "No messages sent yet." }] };
 			}
-			const lines = [...sentHistory.values()].reverse().map((p) => {
+			const lines = [...sentHistory.values()].reverse().map(p => {
 				const status = p.repliedAt ? "✓" : "⏳";
-				const time = p.repliedAt
-					? `replied ${p.repliedAt.toLocaleTimeString()}`
-					: `sent ${p.sentAt.toLocaleTimeString()}`;
-				return `${status} ${p.to} [id: ${p.id}] — "${p.message}" (${time})`;
+				const time = p.repliedAt ? `replied ${p.repliedAt.toLocaleTimeString()}` : `sent ${p.sentAt.toLocaleTimeString()}`;
+				return `${status} ${p.to} [${p.roomAlias}, id: ${p.id}] — \"${p.message}\" (${time})`;
 			});
-			return {
-				content: [{
-					type: "text",
-					text: `Sent messages (${sentHistory.size}):\n${lines.join("\n")}`,
-				}],
-			};
+			return { content: [{ type: "text", text: `Sent messages (${sentHistory.size}):\n${lines.join("\n")}` }] };
 		},
 	});
 
 	pi.registerTool({
 		name: "wait",
 		label: "Wait",
-		description:
-			"Wait for replies to arrive for one or more sent messages. " +
-			"Blocks until all specified replies have been received or the timeout is reached. " +
-			"Use the read tool afterwards to retrieve the reply content.",
+		description: "Wait for replies to arrive for one or more sent messages.",
 		promptSnippet: "Wait for replies to specific sent messages before proceeding",
 		parameters: Type.Object({
 			ids: Type.Array(Type.String(), { description: "Message ids to wait for" }),
@@ -587,7 +703,7 @@ export default function (pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params) {
 			const timeout = params.timeout ?? 30000;
-			const promises = params.ids.map((id) => {
+			const promises = params.ids.map(id => {
 				if (replyBuffer.has(id)) return Promise.resolve();
 				return new Promise<void>((resolve, reject) => {
 					replyWaiters.set(id, resolve);
@@ -600,32 +716,26 @@ export default function (pi: ExtensionAPI) {
 				});
 			});
 			const results = await Promise.allSettled(promises);
-			const timedOut = results
-				.map((r, i) => r.status === "rejected" ? params.ids[i] : null)
-				.filter(Boolean) as string[];
+			const timedOut = results.map((result, index) => result.status === "rejected" ? params.ids[index] : null).filter(Boolean) as string[];
 			if (timedOut.length > 0) throw new Error(`Timed out waiting for replies to: ${timedOut.join(", ")}`);
 			return { content: [{ type: "text", text: `All ${params.ids.length} ${params.ids.length === 1 ? "reply" : "replies"} received. Use the read tool to retrieve ${params.ids.length === 1 ? "it" : "them"}.` }] };
 		},
 	});
 
-	// Metadata for read_reply render, keyed by toolCallId.
-	const readReplyMeta = new Map<string, { from: string }>();
-
 	pi.registerTool({
 		name: "read_reply",
 		label: "Read Reply",
-		description:
-			"Read the reply for a specific sent message. " +
-			"The reply is removed from the queue so it will not be delivered again as a follow-up message. " +
-			"Call wait first to ensure the reply has arrived.",
+		description: "Read the reply for a specific sent message and remove it from the queue.",
 		promptSnippet: "Read the reply for a specific sent message",
 		parameters: Type.Object({
 			id: Type.String({ description: "The message id to read the reply for" }),
 		}),
 		renderResult(result, { expanded }, theme, context) {
-			const from = readReplyMeta.get(context.toolCallId)?.from ?? "?";
+			const meta = readReplyMeta.get(context.toolCallId);
+			const from = meta?.from ?? "?";
+			const roomText = meta?.roomAlias ? theme.fg("muted", ` ${meta.roomAlias}`) : "";
 			if (!expanded) {
-				return new Text(theme.fg("muted", "Reply received from ") + theme.fg("accent", from), 0, 0);
+				return new Text(theme.fg("muted", "Reply received from ") + theme.fg("accent", from) + roomText, 0, 0);
 			}
 			const text = result.content?.[0]?.type === "text" ? result.content[0].text : "";
 			return new Text(text, 0, 0);
@@ -634,12 +744,10 @@ export default function (pi: ExtensionAPI) {
 			const entry = replyBuffer.get(params.id);
 			if (!entry) throw new Error(`No reply available for id ${params.id} — has it arrived yet? Use the wait tool first.`);
 			entry.claimed = true;
-			if (toolCallId) readReplyMeta.set(toolCallId, { from: entry.from });
+			if (toolCallId) readReplyMeta.set(toolCallId, { from: entry.from, roomAlias: entry.roomAlias });
+			const connection = roomConnections.get(entry.roomAlias);
 			return {
-				content: [{
-					type: "text",
-					text: `[Incoming message received from ${entry.from}, id: ${entry.id}]\n${entry.from}: ${entry.content}`,
-				}],
+				content: [{ type: "text", text: `[Incoming message received from ${entry.from} in ${connection ? roomLabel(connection) : entry.roomAlias}, id: ${entry.id}]\n${entry.from}: ${entry.content}` }],
 			};
 		},
 	});
@@ -647,7 +755,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "reply",
 		label: "Reply",
-		description: "Send a reply to a specific agent who sent you an incoming message. Always use this tool to respond — do not just write a response in plain text.",
+		description: "Send a reply to a specific agent who sent you an incoming message.",
 		promptSnippet: "Reply to an incoming message from another agent",
 		parameters: Type.Object({
 			id: Type.String({ description: "The id of the incoming message to reply to" }),
@@ -655,13 +763,11 @@ export default function (pi: ExtensionAPI) {
 		}),
 		renderCall(args, theme, context) {
 			const t = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			const from = incomingQueue.get(args.id)?.from ?? args.id;
-			let content = theme.fg("muted", "Replied to ") + theme.fg("accent", from);
-			if (context.expanded) {
-				content += theme.fg("muted", ": ") + theme.fg("dim", args.content);
-			} else {
-				content += theme.fg("muted", "…");
-			}
+			const incoming = incomingQueue.get(args.id);
+			const from = incoming?.from ?? args.id;
+			const roomText = incoming?.roomAlias ? theme.fg("muted", ` ${incoming.roomAlias}`) : "";
+			let content = theme.fg("muted", "Replied to ") + theme.fg("accent", from) + roomText;
+			content += context.expanded ? theme.fg("muted", ": ") + theme.fg("dim", args.content) : theme.fg("muted", "…");
 			t.setText(content);
 			return t;
 		},
@@ -670,126 +776,139 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(_toolCallId, params) {
 			if (!agentName) throw new Error("Pi2Pi: not connected");
-			if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("Pi2Pi: not connected to broker");
-			const incoming = dequeueIncoming(params.id);
+			const incoming = incomingQueue.get(params.id);
 			if (!incoming) throw new Error(`Pi2Pi: no pending message with id ${params.id}`);
-			ws.send(JSON.stringify({ type: "reply", id: incoming.id, content: params.content }));
-			return { content: [{ type: "text", text: `Reply sent to ${incoming.from}.` }] };
+			const connection = resolveRoom(incoming.roomAlias);
+			if (!connection.ws || connection.ws.readyState !== WebSocket.OPEN) throw new Error(`Pi2Pi: not connected to broker for ${roomLabel(connection)}`);
+			incomingQueue.delete(params.id);
+			connection.ws.send(JSON.stringify({ type: "reply", id: incoming.id, content: params.content }));
+			return { content: [{ type: "text", text: `Reply sent to ${incoming.from} in ${roomLabel(connection)}.` }] };
 		},
 	});
 
 	pi.registerTool({
 		name: "who",
 		label: "Who",
-		description: "List the agents currently connected to this room.",
-		promptSnippet: "List pi agents currently connected to this room",
-		parameters: Type.Object({}),
-		async execute() {
-			if (!agentName || !agentRoom) throw new Error("Pi2Pi: not connected");
-			const others = onlineAgents.filter((n) => n !== agentName);
-			const text = others.length
-				? `Agents in #${agentRoom}: ${others.join(", ")}`
-				: `No other agents connected in #${agentRoom}`;
+		description: "List the agents currently connected to a room.",
+		promptSnippet: "List pi agents currently connected to a room",
+		parameters: Type.Object({
+			room: Type.Optional(Type.String({ description: "Optional room alias or room name" })),
+		}),
+		async execute(_toolCallId, params) {
+			if (!agentName) throw new Error("Pi2Pi: not connected");
+			const connection = resolveRoom(params.room);
+			const members = connection.roster.length > 0
+				? connection.roster.map(member => `${member.displayName}${member.role ? ` (${member.role})` : ""}`)
+				: connection.onlineAgents;
+			const text = members.length ? `Agents in ${roomLabel(connection)}: ${members.join(", ")}` : `No agents connected in ${roomLabel(connection)}`;
 			return { content: [{ type: "text", text }] };
 		},
 	});
 
 	// ── Commands ──────────────────────────────────────────────────────────────
 
+	function parseTellCommandArgs(input: string): { connection: RoomConnection; targetName: string; content: string } | null {
+		const parts = input.trim().split(/\s+/).filter(Boolean);
+		if (parts.length < 2) return null;
+		if (roomConnections.size > 1 && parts.length >= 3) {
+			const maybeRoom = tryResolveRoom(parts[0]);
+			if (maybeRoom) {
+				return { connection: maybeRoom, targetName: parts[1], content: parts.slice(2).join(" ") };
+			}
+		}
+		return { connection: resolveRoom(), targetName: parts[0], content: parts.slice(1).join(" ") };
+	}
+
 	pi.registerCommand("tell", {
-		description: "Send a message to another agent (fire-and-forget). Usage: /tell <name|everyone> <message>",
-
-		// Autocomplete: first word = agent name or 'everyone'
+		description: "Send a message. Usage: /tell <name|everyone> <message> or /tell <room> <name|everyone> <message>",
 		getArgumentCompletions(prefix: string) {
-			const parts = prefix.split(/\s+/);
-			// Only complete the first word (the target name)
-			if (parts.length > 1) return null;
-			const stem = parts[0] ?? "";
-			const candidates = ["everyone", ...onlineAgents.filter((n) => n !== agentName)];
-			const matches = candidates
-				.filter((c) => c.toLowerCase().startsWith(stem.toLowerCase()))
-				.map((c) => ({ value: c + " ", label: c, description: c === "everyone" ? "all connected agents" : "agent" }));
-			return matches.length ? matches : null;
+			const trimmed = prefix.trim();
+			if (!trimmed) {
+				if (roomConnections.size > 1) {
+					return orderedConnections().map(connection => ({ value: `${connection.alias} `, label: connection.alias, description: `room ${connection.room}` }));
+				}
+				const connection = defaultRoomAlias ? roomConnections.get(defaultRoomAlias) : null;
+				if (!connection) return null;
+				const candidates = [
+					{ value: "everyone", label: "everyone", description: "all connected agents" },
+					...connection.roster
+						.filter(member => member.name !== agentName)
+						.map(member => ({ value: member.displayName, label: member.displayName, description: member.role ?? "agent" })),
+				];
+				return candidates.map(candidate => ({ value: `${candidate.value} `, label: candidate.label, description: candidate.description }));
+			}
+			return null;
 		},
-
 		handler: async (args, ctx) => {
 			if (!agentName) {
-				ctx.ui.notify("Pi2Pi: --name flag is required", "error");
+				ctx.ui.notify("Pi2Pi: --agent-name flag is required", "error");
 				return;
 			}
-			if (!ws || ws.readyState !== WebSocket.OPEN) {
-				ctx.ui.notify("Pi2Pi: not connected to broker — is it running?", "error");
+			let parsed: { connection: RoomConnection; targetName: string; content: string } | null;
+			try {
+				parsed = parseTellCommandArgs(args);
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				return;
 			}
-
-			const trimmed = args.trim();
-			const spaceIdx = trimmed.search(/\s+/);
-			if (spaceIdx === -1) {
-				ctx.ui.notify("Usage: /tell <name|everyone> <message>", "warning");
+			if (!parsed || !parsed.content) {
+				ctx.ui.notify("Usage: /tell <name|everyone> <message> or /tell <room> <name|everyone> <message>", "warning");
 				return;
 			}
-
-			const targetName = trimmed.slice(0, spaceIdx);
-			const content = trimmed.slice(spaceIdx).trim();
-
-			if (!content) {
-				ctx.ui.notify("Usage: /tell <name|everyone> <message>", "warning");
+			const { connection, targetName, content } = parsed;
+			if (!connection.ws || connection.ws.readyState !== WebSocket.OPEN) {
+				ctx.ui.notify(`Pi2Pi: not connected to broker for ${roomLabel(connection)}`, "error");
 				return;
 			}
 
 			if (targetName === "everyone") {
-				// Broadcast to all other online agents
-				const targets = onlineAgents.filter((n) => n !== agentName);
+				const targets = connection.onlineAgents.filter(name => name !== agentName);
 				if (targets.length === 0) {
-					ctx.ui.notify("Pi2Pi: no other agents are connected", "warning");
+					ctx.ui.notify(`Pi2Pi: no other agents are connected in ${roomLabel(connection)}`, "warning");
 					return;
 				}
-
 				pi.sendMessage({
 					customType: "pi2pi-sent",
 					content,
 					display: true,
-					details: { to: "everyone", broadcast: true },
+					details: { to: "everyone", broadcast: true, roomLabel: roomLabel(connection) },
 				});
-
 				for (const target of targets) {
 					const msgId = randomUUID();
-					pendingOutgoing.set(msgId, { to: target, message: content, sentAt: new Date() });
-					addToHistory(msgId, target, content);
-					ws!.send(JSON.stringify({ type: "message", id: msgId, to: target, content }));
+					pendingOutgoing.set(msgId, { to: target, message: content, sentAt: new Date(), roomAlias: connection.alias });
+					addToHistory(msgId, target, content, connection.alias);
+					connection.ws.send(JSON.stringify({ type: "message", id: msgId, to: target, content }));
 				}
 			} else {
-				// Point-to-point
-				if (targetName === agentName) {
+				let resolvedTarget: string;
+				try {
+					resolvedTarget = resolveTargetName(connection, targetName);
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+					return;
+				}
+				if (resolvedTarget === agentName) {
 					ctx.ui.notify("Pi2Pi: you can't message yourself", "warning");
 					return;
 				}
-
 				const msgId = randomUUID();
-				pendingOutgoing.set(msgId, { to: targetName, message: content, sentAt: new Date() });
-				addToHistory(msgId, targetName, content);
-
+				pendingOutgoing.set(msgId, { to: resolvedTarget, message: content, sentAt: new Date(), roomAlias: connection.alias });
+				addToHistory(msgId, resolvedTarget, content, connection.alias);
 				pi.sendMessage({
 					customType: "pi2pi-sent",
 					content,
 					display: true,
-					details: { to: targetName },
+					details: { to: targetName, roomLabel: roomLabel(connection) },
 				});
-
-				ws!.send(JSON.stringify({ type: "message", id: msgId, to: targetName, content }));
+				connection.ws.send(JSON.stringify({ type: "message", id: msgId, to: resolvedTarget, content }));
 			}
-
 			refreshStatus();
 		},
 	});
 
 	pi.registerCommand("reply", {
-		description: "Send a reply to the most recent incoming message. Usage: /reply <content>",
+		description: "Send a reply to a pending incoming message. Usage: /reply <id> <content>",
 		handler: async (args, ctx) => {
-			if (!ws || ws.readyState !== WebSocket.OPEN) {
-				ctx.ui.notify("Pi2Pi: not connected to broker", "error");
-				return;
-			}
 			const trimmed = args.trim();
 			const spaceIdx = trimmed.search(/\s+/);
 			if (spaceIdx === -1) {
@@ -802,31 +921,42 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("Usage: /reply <id> <content>", "warning");
 				return;
 			}
-			const incoming = dequeueIncoming(id);
+			const incoming = incomingQueue.get(id);
 			if (!incoming) {
 				ctx.ui.notify(`Pi2Pi: no pending message with id ${id}`, "warning");
 				return;
 			}
-			ws.send(JSON.stringify({ type: "reply", id: incoming.id, content }));
-			ctx.ui.notify(`Reply sent to ${incoming.from}.`, "success");
+			let connection: RoomConnection;
+			try {
+				connection = resolveRoom(incoming.roomAlias);
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				return;
+			}
+			if (!connection.ws || connection.ws.readyState !== WebSocket.OPEN) {
+				ctx.ui.notify(`Pi2Pi: not connected to broker for ${roomLabel(connection)}`, "error");
+				return;
+			}
+			incomingQueue.delete(id);
+			connection.ws.send(JSON.stringify({ type: "reply", id: incoming.id, content }));
+			ctx.ui.notify(`Reply sent to ${incoming.from} in ${roomLabel(connection)}.`, "success");
 		},
 	});
 
 	pi.registerCommand("replies", {
-		description: "Show all sent messages with their status (replied or awaiting reply)",
-		handler: async (_args, _ctx) => {
-			const messages = [...sentHistory.values()].reverse().map((p) => ({
+		description: "Show all sent messages with their status",
+		handler: async () => {
+			const messages = [...sentHistory.values()].reverse().map(p => ({
 				id: p.id,
 				to: p.to,
 				message: p.message,
+				roomAlias: p.roomAlias,
 				sentAt: p.sentAt.toISOString(),
 				repliedAt: p.repliedAt?.toISOString(),
 			}));
 			pi.sendMessage({
 				customType: "pi2pi-pending",
-				content: messages.length
-					? messages.map((p) => `${p.repliedAt ? "✓" : "⏳"} ${p.to} [id: ${p.id}] — "${p.message}"`).join("\n")
-					: "No messages sent yet.",
+				content: messages.length ? messages.map(p => `${p.repliedAt ? "✓" : "⏳"} ${p.to} [${p.roomAlias}, id: ${p.id}] — \"${p.message}\"`).join("\n") : "No messages sent yet.",
 				display: true,
 				details: { messages },
 			});
@@ -834,43 +964,44 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("who", {
-		description: "Show which agents are currently connected to the same room",
-		handler: async (_args, ctx) => {
-			if (!agentName || !agentRoom) {
-				ctx.ui.notify("Pi2Pi: --agent-name and --room flags are required", "error");
+		description: "Show which agents are currently connected. Usage: /who [room]",
+		handler: async (args, ctx) => {
+			if (!agentName) {
+				ctx.ui.notify("Pi2Pi: --agent-name is required", "error");
 				return;
 			}
-			const others = onlineAgents.filter((n) => n !== agentName);
+			let connection: RoomConnection;
+			try {
+				connection = resolveRoom(args.trim() || undefined);
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				return;
+			}
+			const members = connection.roster.length > 0
+				? connection.roster.map(member => ({
+					displayName: member.displayName,
+					role: member.role,
+					self: member.name === agentName,
+				}))
+				: [{ displayName: displayName ?? agentName, role: agentRole, self: true }];
 			pi.sendMessage({
 				customType: "pi2pi-who",
-				content: others.length
-					? `Room #${agentRoom}: you (${agentName}) + ${others.join(", ")}`
-					: `Room #${agentRoom}: you (${agentName}), no others connected`,
+				content: members.map(member => `${member.displayName}${member.role ? ` (${member.role})` : ""}${member.self ? " (you)" : ""}`).join(", "),
 				display: true,
-				details: { self: agentName, room: agentRoom, others },
+				details: { self: displayName ?? agentName, roomLabel: roomLabel(connection), members },
 			});
 		},
 	});
 }
 
-// ── Helper ────────────────────────────────────────────────────────────────────
-
-/**
- * Walk the messages array returned by agent_end and extract the plain text
- * from the final assistant message.
- */
 function extractLastAssistantText(messages: unknown): string | null {
 	if (!Array.isArray(messages)) return null;
-
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i] as { role?: string; content?: unknown };
 		if (msg?.role !== "assistant") continue;
-
 		const content = msg.content;
 		if (!content) continue;
-
 		if (typeof content === "string") return content.trim() || null;
-
 		if (Array.isArray(content)) {
 			const parts: string[] = [];
 			for (const block of content) {
@@ -882,3 +1013,5 @@ function extractLastAssistantText(messages: unknown): string | null {
 	}
 	return null;
 }
+
+void extractLastAssistantText;

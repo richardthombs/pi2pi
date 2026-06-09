@@ -5,6 +5,7 @@
   "scripts": {
     "broker": "bun broker.ts",
     "launch": "bun launcher.ts",
+    "cli": "bun cli.ts",
     "test": "bun test"
   },
   "dependencies": {
