@@ -2,11 +2,17 @@
   "name": "pi2pi",
   "version": "1.0.0",
   "type": "module",
+  "bin": {
+    "pit": "./cli.ts"
+  },
   "scripts": {
     "broker": "bun broker.ts",
     "launch": "bun launcher.ts",
     "cli": "bun cli.ts",
-    "test": "bun test"
+    "web": "bun web.ts",
+    "test": "bun test",
+    "build:pit": "bun build --compile cli.ts --outfile pit",
+    "link": "bun link"
   },
   "dependencies": {
     "yaml": "^2.9.0"

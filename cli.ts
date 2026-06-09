@@ -1,12 +1,18 @@
 #!/usr/bin/env bun
+import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { join } from "path";
+import { stringify } from "yaml";
 import {
 	assertSimpleKey,
+	defaultConfig,
 	deriveRepoName,
 	ensureStateDirectories,
+	globalConfigPath,
 	leadershipRoomName,
 	loadConfig,
 	orchestrationSessionName,
 	overlordName,
+	pitHomeDir,
 	saveConfig,
 	type LoadedConfig,
 } from "./config-store";
@@ -37,35 +43,69 @@ function parseCli(argv: string[]): ParsedCli {
 
 function usage(): never {
 	console.error(`Usage:
-  bun cli.ts repos add <url> [name]
-  bun cli.ts repos list
-  bun cli.ts roles add <name> <model> [title]
-  bun cli.ts roles list
-  bun cli.ts orchestration show
-  bun cli.ts orchestration set broker <url>
-  bun cli.ts orchestration set leadership-room <room>
-  bun cli.ts orchestration set overlord-name <name>
-  bun cli.ts orchestration set session-name <name>
-  bun cli.ts orchestration start
-  bun cli.ts orchestration restart
-  bun cli.ts orchestration attach
-  bun cli.ts orchestration stop
-  bun cli.ts orchestration status
-  bun cli.ts overlord command
-  bun cli.ts overlord start
-  bun cli.ts workspace create <name>
-  bun cli.ts workspace list
-  bun cli.ts workspace <name> add repo <repo>
-  bun cli.ts workspace <name> add member <member-name> <role>
-  bun cli.ts workspace <name> set broker <url>
-  bun cli.ts workspace <name> set room <room>
-  bun cli.ts workspace <name> set leader <member-name>
-  bun cli.ts workspace <name> init
-  bun cli.ts workspace <name> status
+  pit init
+  pit repos add <url> [name]
+  pit repos list
+  pit roles add <name> <model> [title]
+  pit roles list
+  pit orchestration show
+  pit orchestration set broker <url>
+  pit orchestration set leadership-room <room>
+  pit orchestration set overlord-name <name>
+  pit orchestration set session-name <name>
+  pit orchestration start
+  pit orchestration restart
+  pit orchestration attach
+  pit orchestration stop
+  pit orchestration status
+  pit overlord command
+  pit overlord start
+  pit workspace create <name>
+  pit workspace list
+  pit workspace <name> add repo <repo>
+  pit workspace <name> add member <member-name> <role>
+  pit workspace <name> set broker <url>
+  pit workspace <name> set room <room>
+  pit workspace <name> set leader <member-name>
+  pit workspace <name> init
+  pit workspace <name> status
 
 Optional:
-  --config <path>   Use a different config file (default: .pi/config.yaml)`);
+  --config <path>   Use a different config file
+                    (default: .pi/config.yaml if present, else ~/.pit/config.yaml)`);
 	process.exit(1);
+}
+
+function handleInit(): void {
+	const homeDir = pitHomeDir();
+	const configFile = globalConfigPath();
+	const reposRoot      = join(homeDir, "repos");
+	const workspacesRoot = join(homeDir, "workspaces");
+	const runtimeRoot    = join(homeDir, "runtime");
+
+	const alreadyExists = existsSync(configFile);
+
+	// Create directories
+	mkdirSync(reposRoot,      { recursive: true });
+	mkdirSync(workspacesRoot, { recursive: true });
+	mkdirSync(runtimeRoot,    { recursive: true });
+
+	if (!alreadyExists) {
+		// Write a config with explicit absolute state paths
+		const initial = defaultConfig();
+		initial.state.reposRoot      = reposRoot;
+		initial.state.workspacesRoot = workspacesRoot;
+		initial.state.runtimeRoot    = runtimeRoot;
+		writeFileSync(configFile, stringify(initial), "utf8");
+		console.log(`Initialised pit at ${homeDir}`);
+	} else {
+		console.log(`pit already initialised at ${homeDir} (config unchanged)`);
+	}
+
+	console.log(`  config:     ${configFile}`);
+	console.log(`  repos:      ${reposRoot}`);
+	console.log(`  workspaces: ${workspacesRoot}`);
+	console.log(`  runtime:    ${runtimeRoot}`);
 }
 
 function requireWorkspace(loaded: LoadedConfig, workspaceName: string) {
@@ -333,9 +373,20 @@ function handleWorkspace(loaded: LoadedConfig, args: string[]): void {
 try {
 	const parsed = parseCli(process.argv.slice(2));
 	if (parsed.args.length === 0) usage();
-	const loaded = loadConfig(parsed.configPath);
 	const [entity, ...args] = parsed.args;
 
+	if (entity === "init") {
+		handleInit();
+	} else {
+		const loaded = loadConfig(parsed.configPath);
+		_dispatchCommand(entity, loaded, args);
+	}
+} catch (error) {
+	console.error(error instanceof Error ? error.message : String(error));
+	process.exit(1);
+}
+
+function _dispatchCommand(entity: string, loaded: ReturnType<typeof loadConfig>, args: string[]): void {
 	if (entity === "repos") {
 		handleRepos(loaded, args);
 	} else if (entity === "roles") {
@@ -349,7 +400,4 @@ try {
 	} else {
 		usage();
 	}
-} catch (error) {
-	console.error(error instanceof Error ? error.message : String(error));
-	process.exit(1);
 }
