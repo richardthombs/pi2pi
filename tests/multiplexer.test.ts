@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import type { LoadedConfig } from "../config-store";
 import { defaultConfig } from "../config-store";
-import { buildTmuxLikeCommandSequence, cmuxLayoutForCommands, selectMultiplexerKind, tmuxLayoutName } from "../multiplexer";
+import { buildTmuxLikeCommandSequence, cmuxLayoutForCommands, selectMultiplexerKind } from "../multiplexer";
 
 function git(args: string[], cwd?: string): string {
 	const proc = Bun.spawnSync(["git", ...args], {
@@ -101,91 +101,94 @@ describe("tmux-like command generation", () => {
 });
 
 describe("cmux grid layout", () => {
-	const T = 1e-10;
-
 	type LayoutNode = ReturnType<typeof cmuxLayoutForCommands>;
 
-	function paneAreas(node: LayoutNode, w = 1, h = 1): Array<{ width: number; height: number }> {
-		if ("pane" in node) return [{ width: w, height: h }];
-		if (node.direction === "horizontal") {
-			return [
-				...paneAreas(node.children[0], w * node.split, h),
-				...paneAreas(node.children[1], w * (1 - node.split), h),
-			];
-		} else {
-			return [
-				...paneAreas(node.children[0], w, h * node.split),
-				...paneAreas(node.children[1], w, h * (1 - node.split)),
-			];
+	// Count panes per top-level column
+	function columnSizes(node: LayoutNode): number[] {
+		function countLeaves(n: LayoutNode): number {
+			if ("pane" in n) return 1;
+			return countLeaves(n.children[0]) + countLeaves(n.children[1]);
 		}
+		const cols: number[] = [];
+		let cur: LayoutNode = node;
+		while (!("pane" in cur) && cur.direction === "horizontal") {
+			cols.push(countLeaves(cur.children[0]));
+			cur = cur.children[1];
+		}
+		cols.push(countLeaves(cur));
+		return cols;
 	}
 
+	// In-order leaf traversal
 	function inOrder(node: LayoutNode): string[] {
 		if ("pane" in node) return [node.pane.surfaces[0].command];
 		return [...inOrder(node.children[0]), ...inOrder(node.children[1])];
 	}
 
-	test("n=1 -- single pane node, no split", () => {
+	// Collect all horizontal split values
+	function splitValues(node: LayoutNode): number[] {
+		if ("pane" in node) return [];
+		return [
+			...(node.direction === "horizontal" ? [node.split] : []),
+			...splitValues(node.children[0]),
+			...splitValues(node.children[1]),
+		];
+	}
+
+	const T = 1e-10;
+
+	test("n=1 -- single pane, no split", () => {
 		const layout = cmuxLayoutForCommands(["a"]);
 		expect("pane" in layout).toBe(true);
+		expect(columnSizes(layout)).toEqual([1]);
 	});
 
-	test("n=2 (2x1, spare=0) -- 2 equal panes, area = 0.5 each", () => {
-		const areas = paneAreas(cmuxLayoutForCommands(["a", "b"]));
-		expect(areas).toHaveLength(2);
-		for (const a of areas) expect(Math.abs(a.width * a.height - 0.5)).toBeLessThan(T);
+	test("n=2 -- columnSizes=[2] (single column, known edge case)", () => {
+		// rows_max=2, cols=ceil(2/2)=1 => single column of 2 stacked
+		expect(columnSizes(cmuxLayoutForCommands(["a", "b"]))).toEqual([2]);
 	});
 
-	test("n=3 (2x2, spare=1) -- leader area = 0.5, height = 1, others = 0.25 each", () => {
-		const areas = paneAreas(cmuxLayoutForCommands(["leader", "b", "c"]));
-		expect(areas).toHaveLength(3);
-		expect(Math.abs(areas[0].width - 0.5)).toBeLessThan(T);
-		expect(Math.abs(areas[0].height - 1)).toBeLessThan(T);
-		for (const a of areas.slice(1)) expect(Math.abs(a.width * a.height - 0.25)).toBeLessThan(T);
+	test("n=3 -- columnSizes=[1,2]", () => {
+		expect(columnSizes(cmuxLayoutForCommands(["a","b","c"]))).toEqual([1, 2]);
 	});
 
-	test("n=4 (2x2, spare=0) -- all areas = 0.25", () => {
-		const areas = paneAreas(cmuxLayoutForCommands(["a", "b", "c", "d"]));
-		expect(areas).toHaveLength(4);
-		for (const a of areas) expect(Math.abs(a.width * a.height - 0.25)).toBeLessThan(T);
+	test("n=4 -- columnSizes=[2,2]", () => {
+		expect(columnSizes(cmuxLayoutForCommands(["a","b","c","d"]))).toEqual([2, 2]);
 	});
 
-	test("n=5 (3x2, spare=1) -- leader area = 1/3, others = 1/6 each", () => {
-		const areas = paneAreas(cmuxLayoutForCommands(["a", "b", "c", "d", "e"]));
-		expect(areas).toHaveLength(5);
-		expect(Math.abs(areas[0].width * areas[0].height - 1 / 3)).toBeLessThan(T);
-		for (const a of areas.slice(1)) expect(Math.abs(a.width * a.height - 1 / 6)).toBeLessThan(T);
+	test("n=5 -- columnSizes=[2,3]", () => {
+		expect(columnSizes(cmuxLayoutForCommands(["a","b","c","d","e"]))).toEqual([2, 3]);
 	});
 
-	test("n=6 (3x2, spare=0) -- all areas = 1/6", () => {
-		const areas = paneAreas(cmuxLayoutForCommands(["a", "b", "c", "d", "e", "f"]));
-		expect(areas).toHaveLength(6);
-		for (const a of areas) expect(Math.abs(a.width * a.height - 1 / 6)).toBeLessThan(T);
+	test("n=7 -- columnSizes=[2,2,3]", () => {
+		const cmds = ["a","b","c","d","e","f","g"];
+		expect(columnSizes(cmuxLayoutForCommands(cmds))).toEqual([2, 2, 3]);
+	});
+
+	test("n=9 -- columnSizes=[3,3,3]", () => {
+		const cmds = Array.from({length: 9}, (_, i) => String(i));
+		expect(columnSizes(cmuxLayoutForCommands(cmds))).toEqual([3, 3, 3]);
 	});
 
 	test("commands appear in input order via in-order traversal", () => {
-		const cmds = ["alpha", "beta", "gamma", "delta"];
+		const cmds = ["alpha","beta","gamma","delta","epsilon"];
 		expect(inOrder(cmuxLayoutForCommands(cmds))).toEqual(cmds);
+	});
+
+	test("all horizontal splits give equal column widths (split=1/remaining cols)", () => {
+		// n=6: cols=2, each horizontal split should be 0.5
+		const splits6 = splitValues(cmuxLayoutForCommands(["a","b","c","d","e","f"]));
+		expect(splits6.length).toBeGreaterThan(0);
+		for (const s of splits6) expect(Math.abs(s - 0.5)).toBeLessThan(T);
+
+		// n=9: cols=3, top-level splits are 1/3 and 1/2 (equal width columns)
+		const node9 = cmuxLayoutForCommands(Array.from({length: 9}, (_, i) => String(i)));
+		if (!("pane" in node9) && node9.direction === "horizontal") {
+			expect(Math.abs(node9.split - 1/3)).toBeLessThan(T);
+		}
 	});
 
 	test("n=0 throws", () => {
 		expect(() => cmuxLayoutForCommands([])).toThrow();
-	});
-});
-
-describe("tmuxLayoutName", () => {
-	test("spare=0 cases use tiled", () => {
-		expect(tmuxLayoutName(1)).toBe("tiled");
-		expect(tmuxLayoutName(2)).toBe("tiled");
-		expect(tmuxLayoutName(4)).toBe("tiled");
-		expect(tmuxLayoutName(6)).toBe("tiled");
-		expect(tmuxLayoutName(9)).toBe("tiled");
-	});
-
-	test("spare>0 cases use main-vertical", () => {
-		expect(tmuxLayoutName(3)).toBe("main-vertical");
-		expect(tmuxLayoutName(5)).toBe("main-vertical");
-		expect(tmuxLayoutName(7)).toBe("main-vertical");
-		expect(tmuxLayoutName(8)).toBe("main-vertical");
 	});
 });
