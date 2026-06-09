@@ -25,6 +25,12 @@ interface TeamWindowPlan {
 	commands: string[];
 }
 
+interface SingleCommandWindowPlan {
+	name: string;
+	cwd: string;
+	command: string;
+}
+
 function shellEsc(arg: string): string {
 	return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
@@ -134,34 +140,90 @@ function buildLaunchCommand(loaded: LoadedConfig, key: string, args: string[], f
 	return `& ${psEsc(powershellExe)} -NoExit -NoProfile -ExecutionPolicy Bypass -File ${psEsc(scriptPath)}`;
 }
 
+function localBrokerArgs(loaded: LoadedConfig): string[] | null {
+	const brokerUrl = loaded.config.orchestration.broker ?? "ws://localhost:7331";
+	let parsed: URL;
+	try {
+		parsed = new URL(brokerUrl);
+	} catch {
+		return null;
+	}
+	const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+	if (parsed.protocol !== "ws:" || !localHosts.has(parsed.hostname)) return null;
+	const port = parsed.port ? Number(parsed.port) : 7331;
+	return ["bun", "broker.ts", "--port", String(Number.isFinite(port) ? port : 7331)];
+}
+
 function buildTmuxLikePlan(loaded: LoadedConfig, forWindowsShell: boolean) {
 	const sessionName = orchestrationSessionName(loaded.config);
 	const leadershipCommand = buildLaunchCommand(loaded, "overlord", buildOverlordArgs(loaded), forWindowsShell);
+	const brokerArgs = localBrokerArgs(loaded);
+	const brokerWindow = brokerArgs
+		? {
+			name: "broker",
+			cwd: loaded.projectRoot,
+			command: buildLaunchCommand(loaded, "broker", brokerArgs, forWindowsShell),
+		}
+		: null;
 	const teamWindows = Object.keys(loaded.config.workspaces).sort().map(name => orderedWorkspaceCommands(loaded, name, forWindowsShell));
 	return {
 		sessionName,
 		leadership: {
 			name: "leadership",
-			cwd: loaded.configDir,
+			cwd: loaded.projectRoot,
 			command: leadershipCommand,
 		},
+		brokerWindow,
 		teamWindows,
 	};
 }
 
+function tmuxLikeSessionSize(plan: ReturnType<typeof buildTmuxLikePlan>): { width: number; height: number } {
+	const widestTeam = Math.max(1, ...plan.teamWindows.map(window => window.commands.length));
+	const requiredRightPanes = Math.max(1, widestTeam - 1);
+	const minHeight = Math.max(30, requiredRightPanes * 6 + 6);
+	const width = Math.max(process.stdout.columns || 0, 160);
+	const height = Math.max(process.stdout.rows || 0, minHeight);
+	return { width, height };
+}
+
 export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: string, kind: "tmux" | "psmux"): string[][] {
 	const plan = buildTmuxLikePlan(loaded, kind === "psmux");
+	const size = tmuxLikeSessionSize(plan);
 	const commands: string[][] = [];
 	commands.push([executable, "has-session", "-t", plan.sessionName]);
-	commands.push([executable, "new-session", "-d", "-s", plan.sessionName, "-n", plan.leadership.name, "-c", plan.leadership.cwd, plan.leadership.command]);
+	commands.push([
+		executable,
+		"new-session",
+		"-d",
+		"-s", plan.sessionName,
+		"-n", plan.leadership.name,
+		"-c", plan.leadership.cwd,
+		"-x", String(size.width),
+		"-y", String(size.height),
+		plan.leadership.command,
+	]);
+	commands.push([executable, "set-option", "-t", plan.sessionName, "-g", "extended-keys", "on"]);
+
+	if (plan.brokerWindow) {
+		commands.push([
+			executable,
+			"new-window",
+			"-t", plan.sessionName,
+			"-n", plan.brokerWindow.name,
+			"-c", plan.brokerWindow.cwd,
+			plan.brokerWindow.command,
+		]);
+	}
 
 	for (const window of plan.teamWindows) {
 		const [leader, ...others] = window.commands;
 		commands.push([executable, "new-window", "-t", plan.sessionName, "-n", window.name, "-c", window.cwd, leader]);
-		for (const command of others) {
-			commands.push([executable, "split-window", "-t", `${plan.sessionName}:${window.name}`, "-c", window.cwd, command]);
-		}
 		if (others.length > 0) {
+			commands.push([executable, "split-window", "-h", "-t", `${plan.sessionName}:${window.name}`, "-c", window.cwd, others[0]]);
+			for (const command of others.slice(1)) {
+				commands.push([executable, "split-window", "-v", "-t", `${plan.sessionName}:${window.name}`, "-c", window.cwd, command]);
+			}
 			commands.push([executable, "select-pane", "-t", `${plan.sessionName}:${window.name}.0`]);
 			commands.push([executable, "select-layout", "-t", `${plan.sessionName}:${window.name}`, "main-vertical"]);
 		}
@@ -210,8 +272,10 @@ function cmuxLayoutForCommands(commands: string[]) {
 
 function runCmuxStart(loaded: LoadedConfig, mux: SelectedMultiplexer): void {
 	const leadershipCommand = buildLaunchCommand(loaded, "overlord", buildOverlordArgs(loaded), false);
+	const brokerArgs = localBrokerArgs(loaded);
 	const workspaces = [
-		{ name: "leadership", cwd: loaded.configDir, commands: [leadershipCommand] },
+		{ name: "leadership", cwd: loaded.projectRoot, commands: [leadershipCommand] },
+		...(brokerArgs ? [{ name: "broker", cwd: loaded.projectRoot, commands: [buildLaunchCommand(loaded, "broker", brokerArgs, false)] }] : []),
 		...Object.keys(loaded.config.workspaces).sort().map(name => orderedWorkspaceCommands(loaded, name, false)),
 	];
 

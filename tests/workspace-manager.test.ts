@@ -42,6 +42,7 @@ describe("workspace-manager", () => {
 		loaded = {
 			configPath: join(root, "config.yaml"),
 			configDir: root,
+			projectRoot: root,
 			config: defaultConfig(),
 		};
 		loaded.config.repositories.sample = { url: originRepo, ref: "main" };

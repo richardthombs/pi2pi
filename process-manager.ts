@@ -97,6 +97,15 @@ function leaderHandle(workspaceName: string): string {
 	return `${workspaceName}.lead`;
 }
 
+function agentSessionDir(loaded: LoadedConfig, scope: string, agentKey: string): string {
+	const { runtimeRoot } = ensureStateDirectories(loaded);
+	return join(runtimeRoot, "pi-sessions", scope, agentKey);
+}
+
+function agentSessionName(memberName: string, roleName: string, workspaceName: string): string {
+	return `${memberName} (${roleName}) — ${workspaceName}`;
+}
+
 function roomBindingsForMember(loaded: LoadedConfig, workspaceName: string, workspace: WorkspaceDefinition, member: MemberDefinition): RoomBinding[] {
 	const bindings: RoomBinding[] = [{ alias: "team", room: workspaceRoomName(workspaceName, workspace) }];
 	if (workspace.leader === member.name) {
@@ -172,10 +181,17 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 		const roomBindingArg = roomBindings.map(binding => `${binding.alias}=${binding.room}`).join(",");
 		const systemPrompt = buildPrompt(workspaceName, workspace, member, role, handle, repoList, roomBindings, leadershipRoom);
 		const model = member.model ?? role.model;
+		const sessionDir = agentSessionDir(loaded, workspaceName, member.name);
+		const sessionName = agentSessionName(member.name, member.role, workspaceName);
 		const args: string[] = [
 			"pi",
+			"-c",
+			"--session-dir", sessionDir,
+			"--name", sessionName,
 			"-e", extensionPath,
 			"--agent-name", handle,
+			"--display-name", member.name,
+			"--agent-role", member.role,
 			"--rooms", roomBindingArg,
 			"--default-room", "team",
 			"--model", model,
@@ -203,6 +219,8 @@ export function buildOverlordArgs(loaded: LoadedConfig): string[] {
 	const leadershipRoom = leadershipRoomName(loaded.config);
 	const brokerUrl = loaded.config.orchestration.broker ?? "ws://localhost:7331";
 	const name = overlordName(loaded.config);
+	const sessionDir = agentSessionDir(loaded, "orchestration", name);
+	const sessionName = `${name} (overlord)`;
 	const systemPrompt = [
 		`You are ${name}, the interactive overlord coordinating team leaders.`,
 		`You are connected to leadership=#${leadershipRoom}.`,
@@ -213,8 +231,13 @@ export function buildOverlordArgs(loaded: LoadedConfig): string[] {
 
 	return [
 		"pi",
+		"-c",
+		"--session-dir", sessionDir,
+		"--name", sessionName,
 		"-e", extensionPath,
 		"--agent-name", name,
+		"--display-name", name,
+		"--agent-role", "overlord",
 		"--rooms", `leadership=${leadershipRoom}`,
 		"--default-room", "leadership",
 		"--broker", brokerUrl,

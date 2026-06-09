@@ -17,11 +17,18 @@ const MAX_RECONNECT_ATTEMPTS = 20;
 
 type AgentState = "active" | "idle";
 
+type RoomMember = {
+	name: string;
+	displayName: string;
+	role: string | null;
+};
+
 type RoomConnection = {
 	alias: string;
 	room: string;
 	ws: WebSocket | null;
 	onlineAgents: string[];
+	roster: RoomMember[];
 	reconnectAttempts: number;
 };
 
@@ -59,6 +66,14 @@ export default function (pi: ExtensionAPI) {
 		description: "Single room to join (backwards-compatible alias for --rooms <room>)",
 		type: "string",
 	});
+	pi.registerFlag("display-name", {
+		description: "Optional human-friendly display name shown in broker UIs",
+		type: "string",
+	});
+	pi.registerFlag("agent-role", {
+		description: "Optional role label shown in broker UIs and room membership summaries",
+		type: "string",
+	});
 	pi.registerFlag("rooms", {
 		description: "Comma-separated room bindings, e.g. team=engineering,leadership=leadership",
 		type: "string",
@@ -76,6 +91,8 @@ export default function (pi: ExtensionAPI) {
 	let agentName: string | null = null;
 	let brokerUrl: string = BROKER_DEFAULT;
 	let defaultRoomAlias: string | null = null;
+	let displayName: string | null = null;
+	let agentRole: string | null = null;
 	let shutdownRequested = false;
 
 	const roomConnections = new Map<string, RoomConnection>();
@@ -121,10 +138,15 @@ export default function (pi: ExtensionAPI) {
 		uiSetStatus?.("pi2pi", text);
 	}
 
+	function normalizeRoomInput(input: string): string {
+		return input.trim().replace(/^#/, "");
+	}
+
 	function tryResolveRoom(input: string): RoomConnection | null {
-		const byAlias = roomConnections.get(input);
+		const normalized = normalizeRoomInput(input);
+		const byAlias = roomConnections.get(normalized);
 		if (byAlias) return byAlias;
-		return orderedConnections().find(connection => connection.room === input) ?? null;
+		return orderedConnections().find(connection => connection.room === normalized) ?? null;
 	}
 
 	function resolveRoom(input?: string): RoomConnection {
@@ -186,23 +208,49 @@ export default function (pi: ExtensionAPI) {
 				room: binding.room,
 				ws: null,
 				onlineAgents: [],
+				roster: [],
 				reconnectAttempts: 0,
 			});
 		}
 		defaultRoomAlias = defaultAlias;
 	}
 
+	function formatMember(member: RoomMember): string {
+		return member.role ? `${member.displayName} (${member.role})` : member.displayName;
+	}
+
+	function resolveTargetName(connection: RoomConnection, requested: string): string {
+		const trimmed = requested.trim();
+		if (!trimmed) throw new Error("Pi2Pi: target name cannot be empty");
+		if (trimmed === "everyone") return trimmed;
+		if (connection.onlineAgents.includes(trimmed)) return trimmed;
+
+		const normalized = trimmed.replace(/\s*\([^)]*\)\s*$/, "").trim().toLowerCase();
+		const matches = connection.roster.filter(member => {
+			const display = member.displayName.trim().toLowerCase();
+			const withRole = formatMember(member).trim().toLowerCase();
+			return display === normalized || withRole === trimmed.toLowerCase() || display === trimmed.toLowerCase();
+		});
+
+		if (matches.length === 1) return matches[0].name;
+		if (matches.length > 1) {
+			throw new Error(`Pi2Pi: target \"${requested}\" is ambiguous in ${roomLabel(connection)}; matches: ${matches.map(formatMember).join(", ")}`);
+		}
+		return trimmed;
+	}
+
 	function refreshStatus() {
 		if (!agentName) return;
+		const identity = `${displayName ?? agentName}${agentRole ? ` (${agentRole})` : ""}`;
 		const roomSummary = orderedConnections().map(connection => {
-			const others = connection.onlineAgents.filter(name => name !== agentName);
-			const peers = others.length ? `[${others.join(", ")}]` : "";
-			return roomConnections.size === 1
-				? `#${connection.room}${peers}`
-				: `${connection.alias}${peers}`;
-		}).join(" ");
-		const waiting = pendingOutgoing.size ? ` ⏳×${pendingOutgoing.size}` : "";
-		setStatus(`● ${agentName}${roomSummary ? ` ${roomSummary}` : ""}${waiting}`);
+			const others = connection.roster.filter(member => member.name !== agentName);
+			const membersText = others.length > 0
+				? others.map(formatMember).join(", ")
+				: "";
+			return `${connection.room}: [${membersText}]`;
+		}).join(" | ");
+		const waiting = pendingOutgoing.size ? ` | waiting: ${pendingOutgoing.size}` : "";
+		setStatus(`● ${identity}${roomSummary ? ` | ${roomSummary}` : ""}${waiting}`);
 	}
 
 	function sendStatus() {
@@ -244,13 +292,14 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const { type, id, name, from, content, agents, reason } = msg as {
+		const { type, id, name, from, content, agents, roster, reason } = msg as {
 			type?: string;
 			id?: string;
 			name?: string;
 			from?: string;
 			content?: string;
 			agents?: string[];
+			roster?: Array<{ name?: string; displayName?: string; role?: string | null }>;
 			reason?: string;
 		};
 
@@ -265,6 +314,21 @@ export default function (pi: ExtensionAPI) {
 
 			case "agent_list": {
 				connection.onlineAgents = agents ?? [];
+				connection.roster = (roster ?? []).flatMap(member => {
+					if (!member.name) return [];
+					return [{
+						name: member.name,
+						displayName: member.displayName?.trim() || member.name,
+						role: member.role ?? null,
+					}];
+				});
+				if (connection.roster.length === 0) {
+					connection.roster = connection.onlineAgents.map(memberName => ({
+						name: memberName,
+						displayName: memberName,
+						role: null,
+					}));
+				}
 				refreshStatus();
 				break;
 			}
@@ -344,7 +408,7 @@ export default function (pi: ExtensionAPI) {
 		connection.ws = ws;
 		ws.addEventListener("open", () => {
 			connection.reconnectAttempts = 0;
-			ws.send(JSON.stringify({ type: "register", name: agentName, room: connection.room }));
+			ws.send(JSON.stringify({ type: "register", name: agentName, room: connection.room, displayName, role: agentRole }));
 		});
 		ws.addEventListener("message", event => {
 			handleBrokerMessage(connection.alias, String((event as { data?: unknown }).data));
@@ -352,6 +416,7 @@ export default function (pi: ExtensionAPI) {
 		ws.addEventListener("close", () => {
 			connection.ws = null;
 			connection.onlineAgents = [];
+			connection.roster = [];
 			refreshStatus();
 			if (!shutdownRequested) {
 				setStatus(`⚠ ${agentName} — disconnected from ${connection.alias}`);
@@ -424,17 +489,20 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerMessageRenderer("pi2pi-who", (message, _options, theme) => {
-		const details = message.details as { self: string; roomLabel: string; others: string[] } | undefined;
+		const details = message.details as { self: string; roomLabel: string; members: Array<{ displayName: string; role?: string | null; self?: boolean }> } | undefined;
 		const self = details?.self ?? "?";
 		const roomLabelText = details?.roomLabel ?? "?";
-		const others = details?.others ?? [];
+		const members = details?.members ?? [];
 		const box = new Box(1, 1, t => theme.bg("customMessageBg", t));
 		let text = theme.fg("accent", `👥 Room: ${roomLabelText}`) + theme.fg("muted", "\n");
-		text += theme.fg("success", "  ● ") + theme.fg("accent", self) + theme.fg("dim", " (you)\n");
-		if (others.length === 0) {
-			text += theme.fg("muted", "  (no other agents online)");
+		if (members.length === 0) {
+			text += theme.fg("muted", `  ● ${self} (you)`);
 		} else {
-			text += others.map(n => theme.fg("success", "  ● ") + n).join("\n");
+			text += members.map(member => {
+				const suffix = member.self ? " (you)" : "";
+				const role = member.role ? ` — ${member.role}` : "";
+				return theme.fg("success", "  ● ") + theme.fg("accent", member.displayName) + theme.fg("dim", `${role}${suffix}`);
+			}).join("\n");
 		}
 		box.addChild(new Text(text, 0, 0));
 		return box;
@@ -456,6 +524,8 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		agentName = flagName;
+		displayName = ((pi.getFlag("display-name") as string | undefined)?.trim()) || agentName;
+		agentRole = ((pi.getFlag("agent-role") as string | undefined)?.trim()) || null;
 
 		try {
 			const parsed = parseRoomBindings();
@@ -479,6 +549,8 @@ export default function (pi: ExtensionAPI) {
 		agentState = "idle";
 		getContextUsage = null;
 		agentName = null;
+		displayName = null;
+		agentRole = null;
 		defaultRoomAlias = null;
 		incomingQueue.clear();
 		pendingOutgoing.clear();
@@ -490,6 +562,7 @@ export default function (pi: ExtensionAPI) {
 		replyWaiters.clear();
 		for (const connection of orderedConnections()) {
 			connection.onlineAgents = [];
+			connection.roster = [];
 			if (connection.ws) {
 				try {
 					connection.ws.close();
@@ -563,7 +636,7 @@ export default function (pi: ExtensionAPI) {
 
 			const targets = params.to === "everyone"
 				? connection.onlineAgents.filter(name => name !== agentName)
-				: [params.to];
+				: [resolveTargetName(connection, params.to)];
 			if (targets.length === 0) throw new Error(`Pi2Pi: no other agents are connected in ${roomLabel(connection)}`);
 
 			const DELIVERY_TIMEOUT_MS = 2000;
@@ -724,8 +797,10 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 			if (!agentName) throw new Error("Pi2Pi: not connected");
 			const connection = resolveRoom(params.room);
-			const others = connection.onlineAgents.filter(name => name !== agentName);
-			const text = others.length ? `Agents in ${roomLabel(connection)}: ${others.join(", ")}` : `No other agents connected in ${roomLabel(connection)}`;
+			const members = connection.roster.length > 0
+				? connection.roster.map(member => `${member.displayName}${member.role ? ` (${member.role})` : ""}`)
+				: connection.onlineAgents;
+			const text = members.length ? `Agents in ${roomLabel(connection)}: ${members.join(", ")}` : `No agents connected in ${roomLabel(connection)}`;
 			return { content: [{ type: "text", text }] };
 		},
 	});
@@ -754,7 +829,13 @@ export default function (pi: ExtensionAPI) {
 				}
 				const connection = defaultRoomAlias ? roomConnections.get(defaultRoomAlias) : null;
 				if (!connection) return null;
-				return ["everyone", ...connection.onlineAgents.filter(name => name !== agentName)].map(value => ({ value: `${value} `, label: value, description: value === "everyone" ? "all connected agents" : "agent" }));
+				const candidates = [
+					{ value: "everyone", label: "everyone", description: "all connected agents" },
+					...connection.roster
+						.filter(member => member.name !== agentName)
+						.map(member => ({ value: member.displayName, label: member.displayName, description: member.role ?? "agent" })),
+				];
+				return candidates.map(candidate => ({ value: `${candidate.value} `, label: candidate.label, description: candidate.description }));
 			}
 			return null;
 		},
@@ -799,20 +880,27 @@ export default function (pi: ExtensionAPI) {
 					connection.ws.send(JSON.stringify({ type: "message", id: msgId, to: target, content }));
 				}
 			} else {
-				if (targetName === agentName) {
+				let resolvedTarget: string;
+				try {
+					resolvedTarget = resolveTargetName(connection, targetName);
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+					return;
+				}
+				if (resolvedTarget === agentName) {
 					ctx.ui.notify("Pi2Pi: you can't message yourself", "warning");
 					return;
 				}
 				const msgId = randomUUID();
-				pendingOutgoing.set(msgId, { to: targetName, message: content, sentAt: new Date(), roomAlias: connection.alias });
-				addToHistory(msgId, targetName, content, connection.alias);
+				pendingOutgoing.set(msgId, { to: resolvedTarget, message: content, sentAt: new Date(), roomAlias: connection.alias });
+				addToHistory(msgId, resolvedTarget, content, connection.alias);
 				pi.sendMessage({
 					customType: "pi2pi-sent",
 					content,
 					display: true,
 					details: { to: targetName, roomLabel: roomLabel(connection) },
 				});
-				connection.ws.send(JSON.stringify({ type: "message", id: msgId, to: targetName, content }));
+				connection.ws.send(JSON.stringify({ type: "message", id: msgId, to: resolvedTarget, content }));
 			}
 			refreshStatus();
 		},
@@ -889,12 +977,18 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				return;
 			}
-			const others = connection.onlineAgents.filter(name => name !== agentName);
+			const members = connection.roster.length > 0
+				? connection.roster.map(member => ({
+					displayName: member.displayName,
+					role: member.role,
+					self: member.name === agentName,
+				}))
+				: [{ displayName: displayName ?? agentName, role: agentRole, self: true }];
 			pi.sendMessage({
 				customType: "pi2pi-who",
-				content: others.length ? `${roomLabel(connection)}: you (${agentName}) + ${others.join(", ")}` : `${roomLabel(connection)}: you (${agentName}), no others connected`,
+				content: members.map(member => `${member.displayName}${member.role ? ` (${member.role})` : ""}${member.self ? " (you)" : ""}`).join(", "),
 				display: true,
-				details: { self: agentName, roomLabel: roomLabel(connection), others },
+				details: { self: displayName ?? agentName, roomLabel: roomLabel(connection), members },
 			});
 		},
 	});

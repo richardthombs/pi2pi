@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, resolve } from "path";
+import { basename, dirname, resolve } from "path";
 import { parse, stringify } from "yaml";
 
 const DEFAULT_BROKER_URL = "ws://localhost:7331";
@@ -59,6 +59,7 @@ export interface Pi2PiConfig {
 export interface LoadedConfig {
 	configPath: string;
 	configDir: string;
+	projectRoot: string;
 	config: Pi2PiConfig;
 }
 
@@ -69,6 +70,10 @@ export interface ResolvedStatePaths {
 }
 
 const DEFAULT_CONFIG_PATH = ".pi/config.yaml";
+
+function deriveProjectRoot(configDir: string): string {
+	return basename(configDir).toLowerCase() === ".pi" ? dirname(configDir) : configDir;
+}
 
 export function defaultConfig(): Pi2PiConfig {
 	return {
@@ -93,9 +98,10 @@ export function defaultConfig(): Pi2PiConfig {
 export function loadConfig(configPath?: string): LoadedConfig {
 	const resolvedPath = resolve(configPath ?? DEFAULT_CONFIG_PATH);
 	const configDir = dirname(resolvedPath);
+	const projectRoot = deriveProjectRoot(configDir);
 
 	if (!existsSync(resolvedPath)) {
-		return { configPath: resolvedPath, configDir, config: defaultConfig() };
+		return { configPath: resolvedPath, configDir, projectRoot, config: defaultConfig() };
 	}
 
 	const raw = readFileSync(resolvedPath, "utf8");
@@ -105,6 +111,7 @@ export function loadConfig(configPath?: string): LoadedConfig {
 	return {
 		configPath: resolvedPath,
 		configDir,
+		projectRoot,
 		config: {
 			version: parsed?.version ?? defaults.version,
 			state: { ...defaults.state, ...(parsed?.state ?? {}) },
@@ -123,9 +130,9 @@ export function saveConfig(loaded: LoadedConfig): void {
 
 export function resolveStatePaths(loaded: LoadedConfig): ResolvedStatePaths {
 	return {
-		reposRoot: resolve(loaded.configDir, loaded.config.state.reposRoot ?? ".pi/repos"),
-		workspacesRoot: resolve(loaded.configDir, loaded.config.state.workspacesRoot ?? ".pi/workspaces"),
-		runtimeRoot: resolve(loaded.configDir, loaded.config.state.runtimeRoot ?? ".pi/runtime"),
+		reposRoot: resolve(loaded.projectRoot, loaded.config.state.reposRoot ?? ".pi/repos"),
+		workspacesRoot: resolve(loaded.projectRoot, loaded.config.state.workspacesRoot ?? ".pi/workspaces"),
+		runtimeRoot: resolve(loaded.projectRoot, loaded.config.state.runtimeRoot ?? ".pi/runtime"),
 	};
 }
 

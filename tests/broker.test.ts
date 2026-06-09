@@ -840,4 +840,21 @@ describe("HTTP /agents endpoint", () => {
 
 		await alice.close();
 	});
+
+	test("/agents response includes displayName when provided during registration", async () => {
+		const r = nextRoom();
+		const leader = await TestClient.connect();
+		leader.send({ type: "register", name: "pi2pi.lead", displayName: "Alice", room: r });
+		await leader.recvType("registered");
+		await leader.recvType("agent_list");
+
+		const resp = await fetch(`http://localhost:${TEST_PORT}/agents`);
+		const body = await resp.json() as { rooms: Record<string, Array<Record<string, unknown>>> };
+		const agentEntry = body.rooms[r]?.find(a => a.name === "pi2pi.lead");
+
+		expect(agentEntry).toBeDefined();
+		expect(agentEntry!.displayName).toBe("Alice");
+
+		await leader.close();
+	});
 });

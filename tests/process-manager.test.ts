@@ -12,6 +12,7 @@ describe("process-manager", () => {
 		const loaded: LoadedConfig = {
 			configPath: join(root, "config.yaml"),
 			configDir: root,
+			projectRoot: root,
 			config: defaultConfig(),
 		};
 		loaded.config.roles.manager = {
@@ -47,6 +48,12 @@ describe("process-manager", () => {
 			{ alias: "team", room: "engineering" },
 			{ alias: "leadership", room: "leadership" },
 		]);
+		expect(leader?.args).toContain("-c");
+		expect(leader?.args).toContain("--session-dir");
+		expect(leader?.args).toContain("--name");
+		expect(leader?.args).toContain("Alice (manager) — engineering");
+		expect(leader?.args).toContain("--display-name");
+		expect(leader?.args).toContain("Alice");
 		expect(leader?.args).toContain("--rooms");
 		expect(leader?.args).toContain("team=engineering,leadership=leadership");
 
@@ -60,11 +67,16 @@ describe("process-manager", () => {
 		const loaded: LoadedConfig = {
 			configPath: join(root, "config.yaml"),
 			configDir: root,
+			projectRoot: root,
 			config: defaultConfig(),
 		};
 		loaded.config.orchestration.leadershipRoom = "leadership";
 		loaded.config.orchestration.overlordName = "overlord";
 		const args = buildOverlordArgs(loaded);
+		expect(args).toContain("-c");
+		expect(args).toContain("--session-dir");
+		expect(args).toContain("--name");
+		expect(args).toContain("overlord (overlord)");
 		expect(args).toContain("--rooms");
 		expect(args).toContain("leadership=leadership");
 		expect(args).toContain("--agent-name");

@@ -214,7 +214,7 @@ function handleOverlord(loaded: LoadedConfig, args: string[]): void {
 
 	if (action === "start") {
 		const proc = Bun.spawnSync(command, {
-			cwd: loaded.configDir,
+			cwd: loaded.projectRoot,
 			stdio: ["inherit", "inherit", "inherit"],
 		});
 		process.exit(proc.exitCode ?? 0);

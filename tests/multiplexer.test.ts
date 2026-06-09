@@ -58,6 +58,7 @@ describe("tmux-like command generation", () => {
 		loaded = {
 			configPath: join(root, "config.yaml"),
 			configDir: root,
+			projectRoot: root,
 			config: defaultConfig(),
 		};
 		loaded.config.orchestration.sessionName = "pi2pi-org";
@@ -85,11 +86,13 @@ describe("tmux-like command generation", () => {
 		};
 	});
 
-	test("builds leadership and team windows for tmux-like backends", () => {
+	test("builds leadership, broker, and team windows for tmux-like backends", () => {
 		const commands = buildTmuxLikeCommandSequence(loaded, "tmux", "tmux");
 		expect(commands[0]).toEqual(["tmux", "has-session", "-t", "pi2pi-org"]);
 		expect(commands[1]).toContain("new-session");
 		expect(commands[1]).toContain("leadership");
+		expect(commands.some(command => command.includes("set-option") && command.includes("extended-keys") && command.includes("on"))).toBe(true);
+		expect(commands.some(command => command.includes("new-window") && command.includes("broker"))).toBe(true);
 		expect(commands.some(command => command.includes("new-window") && command.includes("engineering"))).toBe(true);
 		expect(commands.some(command => command.includes("split-window") && command.includes("pi2pi-org:engineering"))).toBe(true);
 		expect(commands.some(command => command.includes("select-layout") && command.includes("main-vertical"))).toBe(true);
