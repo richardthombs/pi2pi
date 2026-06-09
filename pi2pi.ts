@@ -21,6 +21,12 @@ type RoomMember = {
 	name: string;
 	displayName: string;
 	role: string | null;
+	state: "active" | "idle" | null;
+	lastMessageReceivedAt: string | null;
+	lastMessageSentAt: string | null;
+	lastToolCallAt: string | null;
+	lastToolCallName: string | null;
+	toolCallsSinceLastMessage: number;
 };
 
 type RoomConnection = {
@@ -299,7 +305,7 @@ export default function (pi: ExtensionAPI) {
 			from?: string;
 			content?: string;
 			agents?: string[];
-			roster?: Array<{ name?: string; displayName?: string; role?: string | null }>;
+			roster?: Array<{ name?: string; displayName?: string; role?: string | null; state?: string | null; lastMessageReceivedAt?: string | null; lastMessageSentAt?: string | null; lastToolCallAt?: string | null; lastToolCallName?: string | null; toolCallsSinceLastMessage?: number }>;
 			reason?: string;
 		};
 
@@ -320,6 +326,12 @@ export default function (pi: ExtensionAPI) {
 						name: member.name,
 						displayName: member.displayName?.trim() || member.name,
 						role: member.role ?? null,
+						state: (member.state === "active" || member.state === "idle") ? member.state : null,
+						lastMessageReceivedAt: member.lastMessageReceivedAt ?? null,
+						lastMessageSentAt: member.lastMessageSentAt ?? null,
+						lastToolCallAt: member.lastToolCallAt ?? null,
+						lastToolCallName: member.lastToolCallName ?? null,
+						toolCallsSinceLastMessage: member.toolCallsSinceLastMessage ?? 0,
 					}];
 				});
 				if (connection.roster.length === 0) {
@@ -327,6 +339,12 @@ export default function (pi: ExtensionAPI) {
 						name: memberName,
 						displayName: memberName,
 						role: null,
+						state: null,
+						lastMessageReceivedAt: null,
+						lastMessageSentAt: null,
+						lastToolCallAt: null,
+						lastToolCallName: null,
+						toolCallsSinceLastMessage: 0,
 					}));
 				}
 				refreshStatus();
@@ -376,6 +394,22 @@ export default function (pi: ExtensionAPI) {
 					}, { triggerTurn: true, deliverAs: "followUp" });
 				} else {
 					replyBuffer.set(id, entry);
+				}
+				break;
+			}
+
+			case "agent_status": {
+				const statusMsg = msg as { name?: string; state?: string; lastToolCallAt?: string; lastToolCallName?: string; toolCallsSinceLastMessage?: number; lastMessageReceivedAt?: string; lastMessageSentAt?: string };
+				if (statusMsg.name) {
+					const entry = connection.roster.find(m => m.name === statusMsg.name);
+					if (entry) {
+						entry.state = (statusMsg.state === "active" || statusMsg.state === "idle") ? statusMsg.state : entry.state;
+						if (statusMsg.lastToolCallAt !== undefined) entry.lastToolCallAt = statusMsg.lastToolCallAt ?? null;
+						if (statusMsg.lastToolCallName !== undefined) entry.lastToolCallName = statusMsg.lastToolCallName ?? null;
+						if (statusMsg.toolCallsSinceLastMessage !== undefined) entry.toolCallsSinceLastMessage = statusMsg.toolCallsSinceLastMessage ?? 0;
+						if (statusMsg.lastMessageReceivedAt !== undefined) entry.lastMessageReceivedAt = statusMsg.lastMessageReceivedAt ?? null;
+						if (statusMsg.lastMessageSentAt !== undefined) entry.lastMessageSentAt = statusMsg.lastMessageSentAt ?? null;
+					}
 				}
 				break;
 			}
@@ -821,6 +855,41 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerTool({
+		name: "activity",
+		label: "Activity",
+		description: "Check whether a specific agent is actively working on a task. Returns state, timestamps, and tool-call count since last message received.",
+		promptSnippet: "Check if an agent is still actively working (state, last tool call, tool-call count since last message)",
+		parameters: Type.Object({
+			agent: Type.String({ description: 'The name of the agent to query (e.g. "Bob")' }),
+			room: Type.Optional(Type.String({ description: "Room alias to look in (defaults to default room)" })),
+		}),
+		async execute(_toolCallId, params) {
+			if (!agentName) throw new Error("Pi2Pi: not connected");
+			const connection = resolveRoom(params.room);
+			const member = connection.roster.find(m => m.name === params.agent);
+			if (!member) {
+				return { content: [{ type: "text", text: JSON.stringify({
+					agent: params.agent, state: "idle",
+					lastMessageReceivedAt: null, lastMessageSentAt: null,
+					lastToolCallAt: null, lastToolCallName: null,
+					toolCallsSinceLastMessage: 0,
+					warning: "Agent not connected or not in roster",
+				}, null, 2) }] };
+			}
+			const report = {
+				agent: member.name,
+				state: member.state === "active" ? "busy" : "idle",
+				lastMessageReceivedAt: member.lastMessageReceivedAt,
+				lastMessageSentAt: member.lastMessageSentAt,
+				lastToolCallAt: member.lastToolCallAt,
+				lastToolCallName: member.lastToolCallName,
+				toolCallsSinceLastMessage: member.toolCallsSinceLastMessage,
+			};
+			return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }] };
+		},
+	});
+
 	// ── Commands ──────────────────────────────────────────────────────────────
 
 	function parseTellCommandArgs(input: string): { connection: RoomConnection; targetName: string; content: string } | null {
@@ -976,6 +1045,14 @@ export default function (pi: ExtensionAPI) {
 				display: true,
 				details: { messages },
 			});
+		},
+	});
+
+	pi.registerCommand("status", {
+		description: "Show the current status of all agents in a room. Usage: /status [room]",
+		handler: async (args, ctx) => {
+			// TODO: display implementation coming from Edward
+			ctx.ui.notify("Status display coming soon", "info");
 		},
 	});
 

@@ -1017,3 +1017,130 @@ describe("agent activity", () => {
 		await bob.close();
 	});
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. ACTIVITY FIELDS IN BROADCASTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("activity fields in broadcasts", () => {
+	test("tool_call triggers agent_status broadcast to peers with activity fields", async () => {
+		const r = nextRoom();
+		const aliceName = `Alice-bcast-${r}`;
+		const bobName = `Bob-bcast-${r}`;
+		const alice = await TestClient.connect();
+		const bob = await TestClient.connect();
+		await alice.register(aliceName, r);
+		await alice.recvType("agent_list");
+		await bob.register(bobName, r);
+		await alice.recvType("agent_list");
+		await bob.recvType("agent_list");
+
+		// Alice sends a tool_call — Bob should receive an agent_status broadcast
+		alice.send({ type: "tool_call", name: "bash" });
+
+		const statusMsg = await bob.recvType("agent_status", 2000);
+		expect(statusMsg.name).toBe(aliceName);
+		expect(statusMsg.lastToolCallName).toBe("bash");
+		expect(typeof statusMsg.lastToolCallAt).toBe("string");
+		expect(new Date(statusMsg.lastToolCallAt as string).getTime()).toBeGreaterThan(0);
+		expect(statusMsg.toolCallsSinceLastMessage).toBe(1);
+
+		await alice.close();
+		await bob.close();
+	});
+
+	test("agent_status broadcast includes all 5 activity fields", async () => {
+		const r = nextRoom();
+		const aliceName = `Alice-fields-${r}`;
+		const bobName = `Bob-fields-${r}`;
+		const alice = await TestClient.connect();
+		const bob = await TestClient.connect();
+		await alice.register(aliceName, r);
+		await alice.recvType("agent_list");
+		await bob.register(bobName, r);
+		await alice.recvType("agent_list");
+		await bob.recvType("agent_list");
+
+		// Send 2 tool calls
+		alice.send({ type: "tool_call", name: "read" });
+		await bob.recvType("agent_status");
+		alice.send({ type: "tool_call", name: "write" });
+		const statusMsg = await bob.recvType("agent_status", 2000);
+
+		expect(statusMsg.name).toBe(aliceName);
+		expect(statusMsg.lastToolCallName).toBe("write");
+		expect(statusMsg.toolCallsSinceLastMessage).toBe(2);
+		// All 5 activity fields present
+		expect("lastMessageReceivedAt" in statusMsg).toBe(true);
+		expect("lastMessageSentAt" in statusMsg).toBe(true);
+		expect("lastToolCallAt" in statusMsg).toBe(true);
+		expect("lastToolCallName" in statusMsg).toBe(true);
+		expect("toolCallsSinceLastMessage" in statusMsg).toBe(true);
+
+		await alice.close();
+		await bob.close();
+	});
+
+	test("agent_list roster entries include activity fields", async () => {
+		const r = nextRoom();
+		const aliceName = `Alice-roster-${r}`;
+		const alice = await TestClient.connect();
+		await alice.register(aliceName, r);
+		await alice.recvType("agent_list");
+
+		// Alice fires a tool_call to update her activity fields
+		alice.send({ type: "tool_call", name: "bash" });
+		await Bun.sleep(40);
+
+		// Bob joins — receives agent_list with roster including Alice's activity fields
+		const bob = await TestClient.connect();
+		await bob.register(`Bob-roster-${r}`, r);
+		const listMsg = await bob.recvType("agent_list");
+
+		const roster = listMsg.roster as Array<Record<string, unknown>>;
+		const aliceEntry = roster.find(m => m.name === aliceName);
+		expect(aliceEntry).toBeDefined();
+		expect(aliceEntry!.lastToolCallName).toBe("bash");
+		expect(typeof aliceEntry!.lastToolCallAt).toBe("string");
+		expect(aliceEntry!.toolCallsSinceLastMessage).toBe(1);
+		expect("lastMessageReceivedAt" in aliceEntry!).toBe(true);
+		expect("lastMessageSentAt" in aliceEntry!).toBe(true);
+
+		await alice.close();
+		await bob.close();
+	});
+
+	test("agent_list roster resets toolCallsSinceLastMessage after incoming message", async () => {
+		const r = nextRoom();
+		const aliceName = `Alice-reset2-${r}`;
+		const bobName = `Bob-reset2-${r}`;
+		const alice = await TestClient.connect();
+		const bob = await TestClient.connect();
+		await alice.register(aliceName, r);
+		await alice.recvType("agent_list");
+		await bob.register(bobName, r);
+		await alice.recvType("agent_list");
+		await bob.recvType("agent_list");
+
+		// Alice fires 2 tool_calls
+		alice.send({ type: "tool_call", name: "read" });
+		await bob.recvType("agent_status");
+		alice.send({ type: "tool_call", name: "bash" });
+		await bob.recvType("agent_status");
+
+		// Bob sends a message to Alice — resets her counter
+		bob.send({ type: "message", id: "msg-bcast-reset", to: aliceName, content: "hi" });
+		await alice.recvType("incoming");
+
+		// Bob should receive agent_status with reset counter (counter resets on message delivery)
+		// Check via HTTP since status is only broadcast on explicit status/tool_call messages
+		await Bun.sleep(30);
+		const resp = await fetch(`http://localhost:${TEST_PORT}/activity/${aliceName}`);
+		const body = await resp.json() as Record<string, unknown>;
+		expect(body.toolCallsSinceLastMessage).toBe(0);
+		expect(typeof body.lastMessageReceivedAt).toBe("string");
+
+		await alice.close();
+		await bob.close();
+	});
+});

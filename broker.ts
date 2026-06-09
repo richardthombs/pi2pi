@@ -22,7 +22,10 @@
  *   { type: "reply_result",  id: string, from: string, content: string }
  *   { type: "agent_status",  room: string, name: string, state: "active"|"idle",
  *                             model: string|null, contextTokens: number|null,
- *                             contextWindow: number|null, contextPercent: number|null }
+ *                             contextWindow: number|null, contextPercent: number|null,
+ *                             lastMessageReceivedAt: string|null, lastMessageSentAt: string|null,
+ *                             lastToolCallAt: string|null, lastToolCallName: string|null,
+ *                             toolCallsSinceLastMessage: number }
  *   { type: "error",         id: string | null, reason: string }
  *
  * HTTP:
@@ -85,6 +88,11 @@ function roomRoster(room: string): Array<{ name: string; displayName: string; ro
 				name: ws.data.name,
 				displayName: ws.data.displayName ?? ws.data.name,
 				role: ws.data.role,
+				lastMessageReceivedAt: ws.data.lastMessageReceivedAt,
+				lastMessageSentAt: ws.data.lastMessageSentAt,
+				lastToolCallAt: ws.data.lastToolCallAt,
+				lastToolCallName: ws.data.lastToolCallName,
+				toolCallsSinceLastMessage: ws.data.toolCallsSinceLastMessage,
 			});
 		}
 	}
@@ -102,9 +110,12 @@ function broadcastRoomList(room: string) {
 }
 
 function broadcastAgentStatus(ws: ServerWebSocket<AgentData>) {
-	const { name, displayName, role, room, state, model, contextTokens, contextWindow, contextPercent } = ws.data;
+	const { name, displayName, role, room, state, model, contextTokens, contextWindow, contextPercent,
+	        lastMessageReceivedAt, lastMessageSentAt, lastToolCallAt, lastToolCallName, toolCallsSinceLastMessage } = ws.data;
 	if (!name || !room) return;
-	const msg = { type: "agent_status", room, name, displayName, role, state, model, contextTokens, contextWindow, contextPercent };
+	const msg = { type: "agent_status", room, name, displayName, role, state, model,
+	              contextTokens, contextWindow, contextPercent,
+	              lastMessageReceivedAt, lastMessageSentAt, lastToolCallAt, lastToolCallName, toolCallsSinceLastMessage };
 	for (const peer of agents.values()) {
 		if (peer.data.room === room) send(peer, msg);
 	}
@@ -578,6 +589,7 @@ Bun.serve<AgentData>({
 					ws.data.lastToolCallAt = new Date().toISOString();
 					ws.data.lastToolCallName = toolName;
 					ws.data.toolCallsSinceLastMessage++;
+					broadcastAgentStatus(ws);
 					break;
 				}
 
