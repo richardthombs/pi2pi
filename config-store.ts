@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { basename, dirname, resolve } from "path";
+import { homedir } from "os";
+import { basename, dirname, join, resolve } from "path";
 import { parse, stringify } from "yaml";
 
 const DEFAULT_BROKER_URL = "ws://localhost:7331";
@@ -77,10 +78,25 @@ export interface ResolvedStatePaths {
 	runtimeRoot: string;
 }
 
-const DEFAULT_CONFIG_PATH = ".pi/config.yaml";
+export function pitHomeDir(): string {
+	return join(homedir(), ".pit");
+}
+
+export function globalConfigPath(): string {
+	return join(pitHomeDir(), "config.yaml");
+}
+
+function resolveDefaultConfigPath(): string {
+	// 1. Local project config takes priority if it exists
+	const local = resolve(".pi/config.yaml");
+	if (existsSync(local)) return local;
+	// 2. Fall back to global home-dir config
+	return globalConfigPath();
+}
 
 function deriveProjectRoot(configDir: string): string {
-	return basename(configDir).toLowerCase() === ".pi" ? dirname(configDir) : configDir;
+	const base = basename(configDir).toLowerCase();
+	return (base === ".pi" || base === ".pit") ? dirname(configDir) : configDir;
 }
 
 export function defaultConfig(): Pi2PiConfig {
@@ -105,7 +121,7 @@ export function defaultConfig(): Pi2PiConfig {
 }
 
 export function loadConfig(configPath?: string): LoadedConfig {
-	const resolvedPath = resolve(configPath ?? DEFAULT_CONFIG_PATH);
+	const resolvedPath = resolve(configPath ?? resolveDefaultConfigPath());
 	const configDir = dirname(resolvedPath);
 	const projectRoot = deriveProjectRoot(configDir);
 
