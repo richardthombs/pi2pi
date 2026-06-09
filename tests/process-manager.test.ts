@@ -81,5 +81,24 @@ describe("process-manager", () => {
 		expect(args).toContain("leadership=leadership");
 		expect(args).toContain("--agent-name");
 		expect(args).toContain("overlord");
+		const prompt = args[args.indexOf("--append-system-prompt") + 1];
+		expect(prompt).toContain("You are overlord, the interactive overlord coordinating team leaders.");
+		expect(prompt).toContain("leadership=#leadership");
+	});
+
+	test("overlord prompt can be configured from orchestration settings", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi2pi-launch-"));
+		const loaded: LoadedConfig = {
+			configPath: join(root, "config.yaml"),
+			configDir: root,
+			projectRoot: root,
+			config: defaultConfig(),
+		};
+		loaded.config.orchestration.leadershipRoom = "ops";
+		loaded.config.orchestration.overlordName = "coordinator";
+		loaded.config.orchestration.overlordPrompt = "You are {{name}} in room #{{leadershipRoom}}.";
+		const args = buildOverlordArgs(loaded);
+		const prompt = args[args.indexOf("--append-system-prompt") + 1];
+		expect(prompt).toBe("You are coordinator in room #ops.");
 	});
 });

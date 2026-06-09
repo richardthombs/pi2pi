@@ -16,6 +16,7 @@ describe("config-store", () => {
 		expect(loaded.config.version).toBe(1);
 		expect(loaded.config.orchestration.leadershipRoom).toBe("leadership");
 		expect(loaded.config.orchestration.overlordName).toBe("overlord");
+		expect(loaded.config.orchestration.overlordPrompt).toContain("interactive overlord coordinating team leaders");
 		expect(loaded.config.orchestration.sessionName).toBe("pi2pi");
 		expect(loaded.config.repositories).toEqual({});
 		expect(loaded.config.workspaces).toEqual({});
@@ -42,9 +43,12 @@ describe("config-store", () => {
 			members: [{ name: "Alice", role: "engineer" }],
 		};
 
+		loaded.config.orchestration.overlordPrompt = "You are {{name}} in #{{leadershipRoom}}.";
+
 		saveConfig(loaded);
 		const raw = readFileSync(configPath, "utf8");
 		expect(raw).toContain("orchestration:");
+		expect(raw).toContain("overlordPrompt");
 		expect(raw).toContain("roles:");
 		expect(raw).toContain("workspaces:");
 		expect(raw).toContain("engineering:");

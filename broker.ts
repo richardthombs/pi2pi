@@ -13,6 +13,7 @@
  *   { type: "status",   state: "active"|"idle", model: string|null,
  *                        contextTokens: number|null, contextWindow: number|null,
  *                        contextPercent: number|null }
+ *   { type: "tool_call", name: string }
  *
  * Broker → Client:
  *   { type: "registered",    name: string, room: string }
@@ -21,8 +22,14 @@
  *   { type: "reply_result",  id: string, from: string, content: string }
  *   { type: "agent_status",  room: string, name: string, state: "active"|"idle",
  *                             model: string|null, contextTokens: number|null,
- *                             contextWindow: number|null, contextPercent: number|null }
+ *                             contextWindow: number|null, contextPercent: number|null,
+ *                             lastMessageReceivedAt: string|null, lastMessageSentAt: string|null,
+ *                             lastToolCallAt: string|null, lastToolCallName: string|null,
+ *                             toolCallsSinceLastMessage: number }
  *   { type: "error",         id: string | null, reason: string }
+ *
+ * HTTP:
+ *   GET /activity/:name  → AgentActivityReport
  *
  * Rooms:
  *   Agents are scoped by room. agent_list only contains room-mates.
@@ -46,6 +53,11 @@ type AgentData = {
 	contextTokens: number | null;
 	contextWindow: number | null;
 	contextPercent: number | null;
+	lastMessageReceivedAt: string | null;
+	lastMessageSentAt: string | null;
+	lastToolCallAt: string | null;
+	lastToolCallName: string | null;
+	toolCallsSinceLastMessage: number;
 };
 
 // Keyed by "room/name"
@@ -76,6 +88,11 @@ function roomRoster(room: string): Array<{ name: string; displayName: string; ro
 				name: ws.data.name,
 				displayName: ws.data.displayName ?? ws.data.name,
 				role: ws.data.role,
+				lastMessageReceivedAt: ws.data.lastMessageReceivedAt,
+				lastMessageSentAt: ws.data.lastMessageSentAt,
+				lastToolCallAt: ws.data.lastToolCallAt,
+				lastToolCallName: ws.data.lastToolCallName,
+				toolCallsSinceLastMessage: ws.data.toolCallsSinceLastMessage,
 			});
 		}
 	}
@@ -93,9 +110,12 @@ function broadcastRoomList(room: string) {
 }
 
 function broadcastAgentStatus(ws: ServerWebSocket<AgentData>) {
-	const { name, displayName, role, room, state, model, contextTokens, contextWindow, contextPercent } = ws.data;
+	const { name, displayName, role, room, state, model, contextTokens, contextWindow, contextPercent,
+	        lastMessageReceivedAt, lastMessageSentAt, lastToolCallAt, lastToolCallName, toolCallsSinceLastMessage } = ws.data;
 	if (!name || !room) return;
-	const msg = { type: "agent_status", room, name, displayName, role, state, model, contextTokens, contextWindow, contextPercent };
+	const msg = { type: "agent_status", room, name, displayName, role, state, model,
+	              contextTokens, contextWindow, contextPercent,
+	              lastMessageReceivedAt, lastMessageSentAt, lastToolCallAt, lastToolCallName, toolCallsSinceLastMessage };
 	for (const peer of agents.values()) {
 		if (peer.data.room === room) send(peer, msg);
 	}
@@ -376,11 +396,44 @@ Bun.serve<AgentData>({
 			}
 			return Response.json({ rooms });
 		}
+		const activityMatch = url.pathname.match(new RegExp("^/activity/([^/]+)$"));
+		if (activityMatch) {
+			const agentName = decodeURIComponent(activityMatch[1]);
+			let found: ServerWebSocket<AgentData> | null = null;
+			for (const ws of agents.values()) {
+				if (ws.data.name === agentName) { found = ws; break; }
+			}
+			if (!found) {
+				return Response.json({
+					agent: agentName,
+					state: "idle",
+					lastMessageReceivedAt: null,
+					lastMessageSentAt: null,
+					lastToolCallAt: null,
+					lastToolCallName: null,
+					toolCallsSinceLastMessage: 0,
+					warning: "Agent not connected",
+				});
+			}
+			const d = found.data;
+			return Response.json({
+				agent: agentName,
+				state: d.state === "active" ? "busy" : "idle",
+				lastMessageReceivedAt: d.lastMessageReceivedAt,
+				lastMessageSentAt: d.lastMessageSentAt,
+				lastToolCallAt: d.lastToolCallAt,
+				lastToolCallName: d.lastToolCallName,
+				toolCallsSinceLastMessage: d.toolCallsSinceLastMessage,
+			});
+		}
 		if (server.upgrade(req, {
 			data: {
 				name: null, displayName: null, role: null, room: null,
 				state: null, model: null,
 				contextTokens: null, contextWindow: null, contextPercent: null,
+				lastMessageReceivedAt: null, lastMessageSentAt: null,
+				lastToolCallAt: null, lastToolCallName: null,
+				toolCallsSinceLastMessage: 0,
 			},
 		})) return undefined;
 		return new Response("Pi2Pi Broker — connect via WebSocket", { status: 200 });
@@ -482,6 +535,8 @@ Bun.serve<AgentData>({
 					}
 
 					pendingReplies.set(id, { originatorName: fromName, originatorRoom: fromRoom, targetName: to });
+					target.data.lastMessageReceivedAt = new Date().toISOString();
+					target.data.toolCallsSinceLastMessage = 0;
 					send(target, { type: "incoming", id, from: fromName, content });
 					log(`[${fromRoom}] "${fromName}" → "${to}" [${id}]: ${String(content).slice(0, 80)}`);
 					break;
@@ -515,8 +570,26 @@ Bun.serve<AgentData>({
 					}
 
 					pendingReplies.delete(id);
+					ws.data.lastMessageSentAt = new Date().toISOString();
 					send(originatorWs, { type: "reply_result", id, from: fromName, content });
 					log(`[${ws.data.room}] "${fromName}" → "${pending.originatorName}" reply [${id}]: ${String(content).slice(0, 80)}`);
+					break;
+				}
+
+				case "tool_call": {
+					if (!ws.data.name || !ws.data.room) {
+						send(ws, { type: "error", id: null, reason: "Must register before sending tool_call" });
+						return;
+					}
+					const toolName = typeof msg.name === "string" ? msg.name.trim() : "";
+					if (!toolName) {
+						send(ws, { type: "error", id: null, reason: "tool_call requires a non-empty name" });
+						return;
+					}
+					ws.data.lastToolCallAt = new Date().toISOString();
+					ws.data.lastToolCallName = toolName;
+					ws.data.toolCallsSinceLastMessage++;
+					broadcastAgentStatus(ws);
 					break;
 				}
 

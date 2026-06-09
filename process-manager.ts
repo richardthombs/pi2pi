@@ -6,6 +6,7 @@ import {
 	ensureStateDirectories,
 	leadershipRoomName,
 	overlordName,
+	overlordPrompt,
 	workspaceRoomName,
 } from "./config-store";
 import { ensureWorkspaceLayout, workspaceRootPath } from "./workspace-manager";
@@ -221,13 +222,10 @@ export function buildOverlordArgs(loaded: LoadedConfig): string[] {
 	const name = overlordName(loaded.config);
 	const sessionDir = agentSessionDir(loaded, "orchestration", name);
 	const sessionName = `${name} (overlord)`;
-	const systemPrompt = [
-		`You are ${name}, the interactive overlord coordinating team leaders.`,
-		`You are connected to leadership=#${leadershipRoom}.`,
-		"Use who to discover currently running team leaders.",
-		"Leader handles follow the convention <workspace>.lead.",
-		"Send top-level tasks to the appropriate team leader, wait for their synthesised result, and coordinate across teams.",
-	].join(" ");
+	const systemPrompt = interpolate(overlordPrompt(loaded.config), {
+		name,
+		leadershipRoom,
+	});
 
 	return [
 		"pi",

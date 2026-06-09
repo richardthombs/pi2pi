@@ -9,6 +9,12 @@ orchestration:
   broker: ws://localhost:7331
   leadershipRoom: leadership
   overlordName: overlord
+  overlordPrompt: |
+    You are {{name}}, the interactive overlord coordinating team leaders.
+    You are connected to leadership=#{{leadershipRoom}}.
+    Use who to discover currently running team leaders.
+    Leader handles follow the convention <workspace>.lead.
+    Send top-level tasks to the appropriate team leader, wait for their synthesised result, and coordinate across teams.
   sessionName: pi2pi
 
 roles:

@@ -5,6 +5,13 @@ import { parse, stringify } from "yaml";
 const DEFAULT_BROKER_URL = "ws://localhost:7331";
 const DEFAULT_LEADERSHIP_ROOM = "leadership";
 const DEFAULT_OVERLORD_NAME = "overlord";
+const DEFAULT_OVERLORD_PROMPT = [
+	"You are {{name}}, the interactive overlord coordinating team leaders.",
+	"You are connected to leadership=#{{leadershipRoom}}.",
+	"Use who to discover currently running team leaders.",
+	"Leader handles follow the convention <workspace>.lead.",
+	"Send top-level tasks to the appropriate team leader, wait for their synthesised result, and coordinate across teams.",
+].join(" ");
 
 export interface RoleDefinition {
 	title: string;
@@ -44,6 +51,7 @@ export interface OrchestrationDefinition {
 	broker?: string;
 	leadershipRoom?: string;
 	overlordName?: string;
+	overlordPrompt?: string;
 	sessionName?: string;
 }
 
@@ -87,6 +95,7 @@ export function defaultConfig(): Pi2PiConfig {
 			broker: DEFAULT_BROKER_URL,
 			leadershipRoom: DEFAULT_LEADERSHIP_ROOM,
 			overlordName: DEFAULT_OVERLORD_NAME,
+			overlordPrompt: DEFAULT_OVERLORD_PROMPT,
 			sessionName: "pi2pi",
 		},
 		roles: {},
@@ -175,6 +184,10 @@ export function brokerUrlForWorkspace(config: Pi2PiConfig, workspace: WorkspaceD
 
 export function overlordName(config: Pi2PiConfig): string {
 	return config.orchestration.overlordName?.trim() || DEFAULT_OVERLORD_NAME;
+}
+
+export function overlordPrompt(config: Pi2PiConfig): string {
+	return config.orchestration.overlordPrompt?.trim() || DEFAULT_OVERLORD_PROMPT;
 }
 
 export function orchestrationSessionName(config: Pi2PiConfig): string {
