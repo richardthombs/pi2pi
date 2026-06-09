@@ -225,7 +225,7 @@ export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: s
 				commands.push([executable, "split-window", "-v", "-t", `${plan.sessionName}:${window.name}`, "-c", window.cwd, command]);
 			}
 			commands.push([executable, "select-pane", "-t", `${plan.sessionName}:${window.name}.0`]);
-			commands.push([executable, "select-layout", "-t", `${plan.sessionName}:${window.name}`, "main-vertical"]);
+			commands.push([executable, "select-layout", "-t", `${plan.sessionName}:${window.name}`, "tiled"]);
 		}
 	}
 
@@ -243,7 +243,7 @@ function runTmuxLikeStart(loaded: LoadedConfig, mux: SelectedMultiplexer): void 
 	attachOrchestration(loaded, mux);
 }
 
-function cmuxLayoutForCommands(commands: string[]) {
+export function cmuxLayoutForCommands(commands: string[]) {
 	type LayoutNode =
 		| { pane: { surfaces: [{ type: "terminal"; command: string }] } }
 		| { direction: "horizontal" | "vertical"; split: number; children: [LayoutNode, LayoutNode] };
@@ -252,22 +252,16 @@ function cmuxLayoutForCommands(commands: string[]) {
 		return { pane: { surfaces: [{ type: "terminal", command: cmd }] } };
 	}
 
-	function verticalStack(cmds: string[]): LayoutNode {
+	function equalHorizontal(cmds: string[]): LayoutNode {
 		if (cmds.length === 1) return pane(cmds[0]);
 		return {
-			direction: "vertical",
+			direction: "horizontal",
 			split: 1 / cmds.length,
-			children: [pane(cmds[0]), verticalStack(cmds.slice(1))],
+			children: [pane(cmds[0]), equalHorizontal(cmds.slice(1))],
 		};
 	}
 
-	if (commands.length === 1) return pane(commands[0]);
-	const [first, ...rest] = commands;
-	return {
-		direction: "horizontal",
-		split: 0.5,
-		children: [pane(first), verticalStack(rest)],
-	};
+	return equalHorizontal(commands);
 }
 
 function runCmuxStart(loaded: LoadedConfig, mux: SelectedMultiplexer): void {
