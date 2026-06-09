@@ -233,19 +233,22 @@ export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: s
 			const colSizes = Array.from({ length: cols }, (_, i) => i < cols - extra ? base : base + 1);
 
 			// Assign commands to columns
-			let offset = 0;
+			let cmdOffset = 0;
 			const colCmds = colSizes.map(size => {
-				const slice = window.commands.slice(offset, offset + size);
-				offset += size;
+				const slice = window.commands.slice(cmdOffset, cmdOffset + size);
+				cmdOffset += size;
 				return slice;
 			});
 
-			// Track pane indices (tmux assigns sequential indices 0, 1, 2, …)
-			let nextPane = 1;
-			const colAnchor: number[] = [0]; // pane index of first pane in each column
+			// offsets[j] = sum of colSizes[0..j-1] = pane index of col j's anchor during Phase 2.
+			// Each vertical split in column j inserts a pane after the current position, shifting
+			// all later panes up by 1 — so col j's anchor = total panes in columns 0..j-1.
+			let cumulative = 0;
+			const offsets = colSizes.map(s => { const o = cumulative; cumulative += s; return o; });
 
-			// Phase 1: carve equal-width columns via horizontal splits
-			// p% goes to the NEW right pane; (100-p)% stays with current pane = one column
+			// Phase 1: horizontal splits to carve equal-width columns.
+			// H-splits append the new pane at the right without renumbering earlier panes,
+			// so after j H-splits the rightmost zone is pane j.
 			let rightmostZone = 0;
 			let remainingCols = cols;
 			for (let j = 1; j < cols; j++) {
@@ -257,32 +260,30 @@ export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: s
 					"-c", window.cwd,
 					colCmds[j][0],
 				]);
-				colAnchor.push(nextPane);
-				rightmostZone = nextPane++;
+				rightmostZone = j; // H-splits don't renumber; new pane = j after j splits
 				remainingCols--;
 			}
 
-			// Phase 2: fill each column with its remaining panes via vertical splits
+			// Phase 2: vertical fills.
+			// For column j, the anchor pane is offsets[j]. Each V-split on pane offsets[j]+(k-1)
+			// inserts the new pane at offsets[j]+k, which becomes the target for the next split.
 			for (let j = 0; j < cols; j++) {
 				const s = colSizes[j];
-				let currentPane = colAnchor[j];
 				for (let k = 1; k < s; k++) {
-					// p% goes to NEW bottom pane; current pane keeps (100-p)% = 1/s of column height
+					const target = offsets[j] + (k - 1);
 					const p = Math.round((s - k) * 100 / (s - k + 1));
 					commands.push([
 						executable, "split-window",
-						"-t", `${winTarget}.${currentPane}`,
+						"-t", `${winTarget}.${target}`,
 						"-v", "-p", String(p),
 						"-c", window.cwd,
 						colCmds[j][k],
 					]);
-					currentPane = nextPane++;
 				}
 			}
 
 			// Focus leader pane (top-left = pane 0)
 			commands.push([executable, "select-pane", "-t", `${winTarget}.0`]);
-			// No select-layout — exact layout is set by the splits above
 		}
 	}
 

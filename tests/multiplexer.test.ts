@@ -101,7 +101,10 @@ describe("tmux-like command generation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Simulate pane dimensions from a tmux command sequence
+// Simulate pane dimensions from a tmux command sequence.
+// Panes are tracked in POSITIONAL order (column-major). V-splits and H-splits
+// insert the new pane at position idx+1 (splice), renumbering later panes — which
+// matches psmux's column-major numbering scheme and keeps panes[idx] correct.
 // ---------------------------------------------------------------------------
 function simulatePanes(cmds: string[][]): Array<{ x: number; y: number; w: number; h: number }> {
 	const panes: Array<{ x: number; y: number; w: number; h: number }> = [];
@@ -113,17 +116,18 @@ function simulatePanes(cmds: string[][]): Array<{ x: number; y: number; w: numbe
 			const tIdx = cmd.indexOf("-t") + 1;
 			const paneIdx = parseInt(cmd[tIdx].split(".").pop()!);
 			const isH = cmd.includes("-h");
-			const pctIdx = cmd.indexOf("-p") + 1;
-			const pct = parseInt(cmd[pctIdx]) / 100;
+			const pct = parseInt(cmd[cmd.indexOf("-p") + 1]) / 100;
 			const par = panes[paneIdx];
 			if (isH) {
-				const newW = par.w * pct;
-				panes[paneIdx] = { ...par, w: par.w * (1 - pct) };
-				panes.push({ x: par.x + par.w * (1 - pct), y: par.y, w: newW, h: par.h });
+				// New pane to the right; insert at paneIdx+1 (shifts later panes)
+				const leftW = par.w * (1 - pct);
+				panes[paneIdx] = { ...par, w: leftW };
+				panes.splice(paneIdx + 1, 0, { x: par.x + leftW, y: par.y, w: par.w * pct, h: par.h });
 			} else {
-				const newH = par.h * pct;
-				panes[paneIdx] = { ...par, h: par.h * (1 - pct) };
-				panes.push({ x: par.x, y: par.y + par.h * (1 - pct), w: par.w, h: newH });
+				// New pane below; insert at paneIdx+1 (shifts later panes)
+				const topH = par.h * (1 - pct);
+				panes[paneIdx] = { ...par, h: topH };
+				panes.splice(paneIdx + 1, 0, { x: par.x, y: par.y + topH, w: par.w, h: par.h * pct });
 			}
 		}
 	}
@@ -179,8 +183,17 @@ describe("tmux exact percentage splits", () => {
 		return { panes: simulatePanes(wCmds), wCmds };
 	}
 
-	test("n=3 (cols=2, sizes=[1,2]): 3 panes, col widths ≈ equal, pane heights correct", () => {
-		const { panes } = getPanes(3);
+	// Extract pane index from each split-window command's -t flag (.N suffix)
+	function splitTargets(wCmds: string[][]): number[] {
+		return wCmds
+			.filter(cmd => cmd[1] === "split-window")
+			.map(cmd => parseInt(cmd[cmd.indexOf("-t") + 1].split(".").pop()!));
+	}
+
+	test("n=3 (cols=2, sizes=[1,2]): 3 panes, correct targets, col widths ≈ equal, pane heights correct", () => {
+		const { panes, wCmds } = getPanes(3);
+		// offsets=[0,1]: Phase1 H-split target .0; Phase2 col1 V-split target .1
+		expect(splitTargets(wCmds)).toEqual([0, 1]);
 		expect(panes).toHaveLength(3);
 		// pane 0: left col, full height
 		expect(Math.abs(panes[0].x)).toBeLessThan(TOL);
@@ -193,8 +206,10 @@ describe("tmux exact percentage splits", () => {
 		}
 	});
 
-	test("n=5 (cols=2, sizes=[2,3]): 5 panes, col widths ≈ 0.5, row heights ≈ equal per col", () => {
-		const { panes } = getPanes(5);
+	test("n=5 (cols=2, sizes=[2,3]): 5 panes, correct targets, col widths ≈ 0.5, row heights ≈ equal per col", () => {
+		const { panes, wCmds } = getPanes(5);
+		// offsets=[0,2]: H .0; V col0 .0; V col1 .2, .3
+		expect(splitTargets(wCmds)).toEqual([0, 0, 2, 3]);
 		expect(panes).toHaveLength(5);
 		// All panes roughly split into 2 equal-width columns
 		for (const p of panes) expect(Math.abs(p.w - 0.5)).toBeLessThan(TOL);
@@ -206,8 +221,10 @@ describe("tmux exact percentage splits", () => {
 		for (const p of rightCol) expect(Math.abs(p.h - 1/3)).toBeLessThan(TOL);
 	});
 
-	test("n=7 (cols=3, sizes=[2,2,3]): 7 panes, col widths ≈ 1/3", () => {
-		const { panes } = getPanes(7);
+	test("n=7 (cols=3, sizes=[2,2,3]): 7 panes, correct targets, col widths ≈ 1/3", () => {
+		const { panes, wCmds } = getPanes(7);
+		// offsets=[0,2,4]: H .0 .1; V col0 .0; V col1 .2; V col2 .4 .5
+		expect(splitTargets(wCmds)).toEqual([0, 1, 0, 2, 4, 5]);
 		expect(panes).toHaveLength(7);
 		for (const p of panes) expect(Math.abs(p.w - 1/3)).toBeLessThan(TOL);
 		// col0 and col1: 2 panes each ≈ 0.5 height
@@ -219,8 +236,10 @@ describe("tmux exact percentage splits", () => {
 		for (const p of col2) expect(Math.abs(p.h - 1/3)).toBeLessThan(TOL);
 	});
 
-	test("n=9 (cols=3, sizes=[3,3,3]): 9 panes, col widths ≈ 1/3, row heights ≈ 1/3", () => {
-		const { panes } = getPanes(9);
+	test("n=9 (cols=3, sizes=[3,3,3]): 9 panes, correct targets, col widths ≈ 1/3, row heights ≈ 1/3", () => {
+		const { panes, wCmds } = getPanes(9);
+		// offsets=[0,3,6]: H .0 .1; V col0 .0 .1; V col1 .3 .4; V col2 .6 .7
+		expect(splitTargets(wCmds)).toEqual([0, 1, 0, 1, 3, 4, 6, 7]);
 		expect(panes).toHaveLength(9);
 		for (const p of panes) {
 			expect(Math.abs(p.w - 1/3)).toBeLessThan(TOL);
