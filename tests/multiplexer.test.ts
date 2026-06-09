@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import type { LoadedConfig } from "../config-store";
@@ -95,8 +95,18 @@ describe("tmux-like command generation", () => {
 		expect(commands.some(command => command.includes("new-window") && command.includes("broker"))).toBe(true);
 		expect(commands.some(command => command.includes("new-window") && command.includes("engineering"))).toBe(true);
 		expect(commands.some(command => command.includes("split-window") && command.some(el => el.startsWith("pi2pi-org:engineering")))).toBe(true);
-		// 2 members → 2×1, spare=0 → "tiled"
+		const worktreePath = join(root, ".pi", "workspaces", "engineering", "pi2pi");
+		const workspaceRoot = join(root, ".pi", "workspaces", "engineering");
+		expect(commands.some(command => command.some(el => el.includes(`cd '${worktreePath.replace(/\\/g, "\\\\")}'`) || el.includes(`cd '${worktreePath}'`)))).toBe(true);
+		expect(commands.some(command => command.some(el => el.includes(`export GIT_CEILING_DIRECTORIES='${workspaceRoot.replace(/\\/g, "\\\\")}'`) || el.includes(`export GIT_CEILING_DIRECTORIES='${workspaceRoot}'`)))).toBe(true);
+	});
 
+	test("psmux launch scripts set repo cwd and git ceiling to the workspace root", () => {
+		buildTmuxLikeCommandSequence(loaded, "psmux", "psmux");
+		const scriptPath = join(root, ".pi", "runtime", "launch-scripts", "engineering-Alice.ps1");
+		const script = readFileSync(scriptPath, "utf8");
+		expect(script).toContain(`$env:GIT_CEILING_DIRECTORIES = '${join(root, ".pi", "workspaces", "engineering").replace(/'/g, "''")}'`);
+		expect(script).toContain(`Set-Location -LiteralPath '${join(root, ".pi", "workspaces", "engineering", "pi2pi").replace(/'/g, "''")}'`);
 	});
 });
 

@@ -40,6 +40,8 @@ export interface LaunchSpec {
 	agentHandle: string;
 	isLeader: boolean;
 	workspaceRoot: string;
+	cwd: string;
+	gitCeilingDir: string;
 	brokerUrl: string;
 	roomBindings: RoomBinding[];
 	args: string[];
@@ -115,6 +117,10 @@ function roomBindingsForMember(loaded: LoadedConfig, workspaceName: string, work
 	return bindings;
 }
 
+function workspaceAgentCwd(workspaceRoot: string, repoNames: string[]): string {
+	return repoNames.length === 1 ? join(workspaceRoot, repoNames[0]) : workspaceRoot;
+}
+
 function buildPrompt(
 	workspaceName: string,
 	workspace: WorkspaceDefinition,
@@ -136,9 +142,11 @@ function buildPrompt(
 	};
 
 	let systemPrompt = interpolate(role.systemPrompt, vars);
-	const repoSummary = repos.length > 0
-		? `\n\nWorkspace repositories available at your cwd root: ${repos.join(", ")}.`
-		: "\n\nYour workspace currently has no repositories.";
+	const repoSummary = repos.length === 0
+		? "\n\nYour workspace currently has no repositories."
+		: repos.length === 1
+			? `\n\nYour cwd is the ${repos[0]} worktree for this workspace.`
+			: `\n\nWorkspace repositories available at your cwd root: ${repos.join(", ")}.`;
 	systemPrompt += repoSummary;
 
 	const teamRoster = workspace.members.map(m => `${m.name} (${m.role})`).join(", ");
@@ -172,6 +180,7 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 	const workspaceRoot = workspaceRootPath(loaded, workspaceName);
 	const brokerUrl = brokerUrlForWorkspace(loaded.config, workspace);
 	const repoList = [...workspace.repositories];
+	const cwd = workspaceAgentCwd(workspaceRoot, repoList);
 	const leadershipRoom = leadershipRoomName(loaded.config);
 
 	return workspace.members.map(member => {
@@ -209,6 +218,8 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 			agentHandle: handle,
 			isLeader,
 			workspaceRoot,
+			cwd,
+			gitCeilingDir: workspaceRoot,
 			brokerUrl,
 			roomBindings,
 			args,
@@ -280,14 +291,14 @@ export function getWorkspaceProcessStatus(loaded: LoadedConfig, workspaceName: s
 				rooms: spec.roomBindings.map(binding => `${binding.alias}=#${binding.room}`),
 				pid,
 				running: pid !== null ? isProcessRunning(pid) : false,
-				cwd: workspaceRoot,
+				cwd: spec.cwd,
 			};
 		}),
 	};
 }
 
 export function startWorkspaceProcesses(loaded: LoadedConfig, workspaceName: string): WorkspaceProcessStatus {
-	const { workspaceRoot } = ensureWorkspaceLayout(loaded, workspaceName);
+	ensureWorkspaceLayout(loaded, workspaceName);
 	const runtime = readRuntimeState(loaded);
 	const specs = createWorkspaceLaunchSpecs(loaded, workspaceName);
 	const membersState = runtime.workspaces[workspaceName]?.members ?? {};
@@ -299,14 +310,15 @@ export function startWorkspaceProcesses(loaded: LoadedConfig, workspaceName: str
 		}
 
 		const child = Bun.spawn(spec.args, {
-			cwd: workspaceRoot,
+			cwd: spec.cwd,
+			env: { ...process.env, GIT_CEILING_DIRECTORIES: spec.gitCeilingDir },
 			stdio: ["ignore", "ignore", "ignore"],
 		});
 		child.unref();
 		membersState[spec.memberName] = {
 			pid: child.pid,
 			role: spec.roleName,
-			cwd: workspaceRoot,
+			cwd: spec.cwd,
 			startedAt: new Date().toISOString(),
 			agentHandle: spec.agentHandle,
 			rooms: spec.roomBindings.map(binding => binding.room),

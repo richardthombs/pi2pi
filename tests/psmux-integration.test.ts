@@ -83,7 +83,7 @@ function runLayout(sessionName: string, agents: string[]): PaneInfo[] {
 	if (!newSession.ok) throw new Error("new-session failed: " + newSession.stderr);
 
 	// Run the split commands — uses buildColumnSplitCommands, the same path as production
-	const cmds = buildColumnSplitCommands(PSMUX, sessionName, winName, ".", agents);
+	const cmds = buildColumnSplitCommands(PSMUX, sessionName, winName, agents);
 	for (const cmd of cmds) {
 		const r = Bun.spawnSync(cmd, { env: ENV, stdout: "pipe", stderr: "pipe" });
 		if (r.exitCode !== 0) {

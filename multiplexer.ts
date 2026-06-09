@@ -19,10 +19,16 @@ export interface SelectedMultiplexer {
 	executable: string;
 }
 
+interface PaneLaunchCommand {
+	cwd: string;
+	gitCeilingDir?: string;
+	command: string;
+}
+
 interface TeamWindowPlan {
 	name: string;
 	cwd: string;
-	commands: string[];
+	commands: PaneLaunchCommand[];
 }
 
 interface SingleCommandWindowPlan {
@@ -114,13 +120,29 @@ function orderedWorkspaceCommands(loaded: LoadedConfig, workspaceName: string, f
 	return {
 		name: workspaceName,
 		cwd: layout.workspaceRoot,
-		commands: orderedSpecs.map(spec => buildLaunchCommand(loaded, `${workspaceName}-${spec.memberName}`, spec.args, forWindowsShell)),
+		commands: orderedSpecs.map(spec => ({
+			cwd: spec.cwd,
+			gitCeilingDir: spec.gitCeilingDir,
+			command: buildLaunchCommand(loaded, `${workspaceName}-${spec.memberName}`, spec.args, forWindowsShell, spec.cwd, spec.gitCeilingDir),
+		})),
 	};
 }
 
-function buildLaunchCommand(loaded: LoadedConfig, key: string, args: string[], forWindowsShell: boolean): string {
+function buildLaunchCommand(
+	loaded: LoadedConfig,
+	key: string,
+	args: string[],
+	forWindowsShell: boolean,
+	cwd?: string,
+	gitCeilingDir?: string,
+): string {
 	if (!forWindowsShell) {
-		return "clear && " + args.map(shellEsc).join(" ");
+		const steps: string[] = [];
+		if (gitCeilingDir) steps.push(`export GIT_CEILING_DIRECTORIES=${shellEsc(gitCeilingDir)}`);
+		if (cwd) steps.push(`cd ${shellEsc(cwd)}`);
+		steps.push("clear");
+		steps.push(args.map(shellEsc).join(" "));
+		return steps.join(" && ");
 	}
 
 	const { runtimeRoot } = ensureStateDirectories(loaded);
@@ -129,6 +151,8 @@ function buildLaunchCommand(loaded: LoadedConfig, key: string, args: string[], f
 	const scriptPath = join(scriptsDir, `${key}.ps1`);
 	const script = [
 		"$ErrorActionPreference = 'Stop'",
+		...(gitCeilingDir ? [`$env:GIT_CEILING_DIRECTORIES = ${psEsc(gitCeilingDir)}`] : []),
+		...(cwd ? [`Set-Location -LiteralPath ${psEsc(cwd)}`] : []),
 		"Clear-Host",
 		`& ${args.map(psEsc).join(" ")}`,
 	].join("\n") + "\n";
@@ -138,6 +162,10 @@ function buildLaunchCommand(loaded: LoadedConfig, key: string, args: string[], f
 	const powershellPath = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 	const powershellExe = existsSync(powershellPath) ? powershellPath : "powershell";
 	return `& ${psEsc(powershellExe)} -NoExit -NoProfile -ExecutionPolicy Bypass -File ${psEsc(scriptPath)}`;
+}
+
+function normalizePaneCommands(commands: Array<PaneLaunchCommand | string>, defaultCwd = "."): PaneLaunchCommand[] {
+	return commands.map(command => typeof command === "string" ? { cwd: defaultCwd, command } : command);
 }
 
 function localBrokerArgs(loaded: LoadedConfig): string[] | null {
@@ -196,10 +224,10 @@ export function buildColumnSplitCommands(
 	executable: string,
 	sessionName: string,
 	windowName: string,
-	cwd: string,
-	agentCommands: string[],
+	agentCommands: Array<PaneLaunchCommand | string>,
 ): string[][] {
-	const n = agentCommands.length;
+	const normalizedCommands = normalizePaneCommands(agentCommands);
+	const n = normalizedCommands.length;
 	if (n <= 1) return []; // single pane — nothing to split
 
 	const winTarget = `${sessionName}:${windowName}`;
@@ -216,7 +244,7 @@ export function buildColumnSplitCommands(
 	// Assign commands to columns
 	let cmdOffset = 0;
 	const colCmds = colSizes.map(size => {
-		const slice = agentCommands.slice(cmdOffset, cmdOffset + size);
+		const slice = normalizedCommands.slice(cmdOffset, cmdOffset + size);
 		cmdOffset += size;
 		return slice;
 	});
@@ -236,8 +264,8 @@ export function buildColumnSplitCommands(
 			executable, "split-window",
 			"-t", `${winTarget}.${rightmostZone}`,
 			"-h", "-p", String(p),
-			"-c", cwd,
-			colCmds[j][0],
+			"-c", colCmds[j][0].cwd,
+			colCmds[j][0].command,
 		]);
 		rightmostZone = j;
 		remainingCols--;
@@ -254,8 +282,8 @@ export function buildColumnSplitCommands(
 				executable, "split-window",
 				"-t", `${winTarget}.${target}`,
 				"-v", "-p", String(p),
-				"-c", cwd,
-				colCmds[j][k],
+				"-c", colCmds[j][k].cwd,
+				colCmds[j][k].command,
 			]);
 		}
 	}
@@ -296,9 +324,9 @@ export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: s
 
 	for (const window of plan.teamWindows) {
 		// Always create window with leader (first command)
-		commands.push([executable, "new-window", "-t", plan.sessionName, "-n", window.name, "-c", window.cwd, window.commands[0]]);
+		commands.push([executable, "new-window", "-t", plan.sessionName, "-n", window.name, "-c", window.commands[0].cwd, window.commands[0].command]);
 		// Append split-window + select-pane commands from the shared helper
-		for (const cmd of buildColumnSplitCommands(executable, plan.sessionName, window.name, window.cwd, window.commands)) {
+		for (const cmd of buildColumnSplitCommands(executable, plan.sessionName, window.name, window.commands)) {
 			commands.push(cmd);
 		}
 	}
@@ -317,17 +345,19 @@ function runTmuxLikeStart(loaded: LoadedConfig, mux: SelectedMultiplexer): void 
 	attachOrchestration(loaded, mux);
 }
 
-export function cmuxLayoutForCommands(commands: string[]) {
+export function cmuxLayoutForCommands(commands: Array<PaneLaunchCommand | string>) {
+	type NormalizedLayoutCommand = PaneLaunchCommand;
+	const normalizedCommands = normalizePaneCommands(commands);
 	type LayoutNode =
 		| { pane: { surfaces: [{ type: "terminal"; command: string }] } }
 		| { direction: "horizontal" | "vertical"; split: number; children: [LayoutNode, LayoutNode] };
 
-	function pane(cmd: string): LayoutNode {
-		return { pane: { surfaces: [{ type: "terminal", command: cmd }] } };
+	function pane(cmd: NormalizedLayoutCommand): LayoutNode {
+		return { pane: { surfaces: [{ type: "terminal", command: cmd.command }] } };
 	}
 
 	// Stack cmds vertically with equal height splits
-	function buildColumn(cmds: string[]): LayoutNode {
+	function buildColumn(cmds: NormalizedLayoutCommand[]): LayoutNode {
 		if (cmds.length === 1) return pane(cmds[0]);
 		return {
 			direction: "vertical",
@@ -337,7 +367,7 @@ export function cmuxLayoutForCommands(commands: string[]) {
 	}
 
 	// Build `cols` equal-width columns from cmds, distributing extras to rightmost
-	function buildColumns(cmds: string[], cols: number): LayoutNode {
+	function buildColumns(cmds: NormalizedLayoutCommand[], cols: number): LayoutNode {
 		const base = Math.floor(cmds.length / cols);
 		const extra = cmds.length % cols;
 		// leftmost (cols-extra) columns get base panes; rightmost extra get base+1
@@ -352,21 +382,21 @@ export function cmuxLayoutForCommands(commands: string[]) {
 		};
 	}
 
-	const n = commands.length;
+	const n = normalizedCommands.length;
 	if (n === 0) throw new Error("cmuxLayoutForCommands: no commands");
-	if (n === 1) return pane(commands[0]);
+	if (n === 1) return pane(normalizedCommands[0]);
 
 	const rowsMax = Math.ceil(Math.sqrt(n));
 	const cols    = Math.ceil(n / rowsMax);
-	return buildColumns(commands, cols);
+	return buildColumns(normalizedCommands, cols);
 }
 
 function runCmuxStart(loaded: LoadedConfig, mux: SelectedMultiplexer): void {
 	const leadershipCommand = buildLaunchCommand(loaded, "overlord", buildOverlordArgs(loaded), false);
 	const brokerArgs = localBrokerArgs(loaded);
 	const workspaces = [
-		{ name: "leadership", cwd: loaded.projectRoot, commands: [leadershipCommand] },
-		...(brokerArgs ? [{ name: "broker", cwd: loaded.projectRoot, commands: [buildLaunchCommand(loaded, "broker", brokerArgs, false)] }] : []),
+		{ name: "leadership", cwd: loaded.projectRoot, commands: [{ cwd: loaded.projectRoot, command: leadershipCommand }] },
+		...(brokerArgs ? [{ name: "broker", cwd: loaded.projectRoot, commands: [{ cwd: loaded.projectRoot, command: buildLaunchCommand(loaded, "broker", brokerArgs, false) }] }] : []),
 		...Object.keys(loaded.config.workspaces).sort().map(name => orderedWorkspaceCommands(loaded, name, false)),
 	];
 

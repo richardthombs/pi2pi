@@ -134,7 +134,7 @@ bun cli.ts orchestration attach
 bun cli.ts orchestration stop
 ```
 
-When orchestration starts, every team member is launched with its working directory set to that team's workspace root, so all assigned repository worktrees are available as sibling directories.
+When orchestration starts, each team member is launched with a working directory inside that team's workspace: if the workspace has exactly one repository, the agent starts inside that repository's worktree; otherwise it starts at the workspace root so the repository worktrees are available as sibling directories. Workspace launches also set `GIT_CEILING_DIRECTORIES` to the workspace root so running `git` from the workspace root will not accidentally target the parent project clone.
 
 Leaders are launched into two rooms:
 - `team` → their own workspace room

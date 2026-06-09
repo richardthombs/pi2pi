@@ -56,8 +56,11 @@ describe("process-manager", () => {
 		expect(leader?.args).toContain("Alice");
 		expect(leader?.args).toContain("--rooms");
 		expect(leader?.args).toContain("team=engineering,leadership=leadership");
+		expect(leader?.cwd).toBe(join(root, ".pi", "workspaces", "engineering", "pi2pi"));
+		expect(leader?.gitCeilingDir).toBe(join(root, ".pi", "workspaces", "engineering"));
 
 		expect(engineer?.agentHandle).toBe("Bob");
+		expect(engineer?.cwd).toBe(join(root, ".pi", "workspaces", "engineering", "pi2pi"));
 		expect(engineer?.roomBindings).toEqual([{ alias: "team", room: "engineering" }]);
 		expect(engineer?.args).toContain("team=engineering");
 	});
