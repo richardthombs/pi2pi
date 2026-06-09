@@ -71,7 +71,7 @@ The repo now includes a workspace-oriented CLI for managing shared repositories,
 
 Use a shared config file (default: `.pi/config.yaml`) with top-level:
 
-- `orchestration` — shared broker / leadership-room / session settings for the overlord + team leads
+- `orchestration` — shared broker / leadership-room / session settings for the overlord + team leads, including the overlord prompt template
 - `roles` — shared across all workspaces
 - `repositories` — cloned once into `.pi/repos/`
 - `workspaces` — each workspace gets its own worktree per required repo under `.pi/workspaces/<workspace>/`
@@ -82,6 +82,8 @@ Each workspace should define:
 - `members` — a mixed-specialty team (for example lead, devs, QA, UX, planner)
 
 An example lives at [`example-workspaces.yaml`](./example-workspaces.yaml).
+
+The overlord prompt is now configurable in `orchestration.overlordPrompt` and supports `{{name}}` and `{{leadershipRoom}}` interpolation.
 
 ### Common commands
 
