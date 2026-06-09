@@ -604,6 +604,22 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+
+	// ── Tool call emission ───────────────────────────────────────────────────
+	// Fires before every tool execution. Notifies the broker so leaders can
+	// query GET /activity/:name to see live tool-call activity.
+	//
+	// Integration test: run `bun broker.ts`, launch pi with
+	//   `--agent-name Alice --room test`
+	// Execute any tool, then verify:
+	//   GET /activity/Alice → { lastToolCallAt: <iso>, lastToolCallName: <name>, toolCallsSinceLastMessage: N }
+	pi.on("tool_execution_start", async (event) => {
+		for (const connection of orderedConnections()) {
+			if (!connection.ws || connection.ws.readyState !== WebSocket.OPEN || !agentName) continue;
+			connection.ws.send(JSON.stringify({ type: "tool_call", name: event.toolName }));
+		}
+	});
+
 	// ── Tools ────────────────────────────────────────────────────────────────
 
 	pi.registerTool({

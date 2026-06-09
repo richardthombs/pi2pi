@@ -101,3 +101,27 @@ Returns an `AgentActivityReport` JSON object for the named agent.
 - `state: "busy"` maps from the existing broker `state: "active"` field; `"idle"` maps from `"idle"` or `null`.
 - All timestamps must be UTC ISO 8601 strings (e.g. `"2026-06-09T14:33:47Z"`).
 - `toolCallsSinceLastMessage` resets to `0` each time a new `incoming` message is delivered to the agent.
+
+## Agent-Side Emission (pi2pi.ts)
+
+Agent-side `tool_call` emission is **now live** via the `tool_execution_start` hook in `pi2pi.ts`.
+
+The handler is registered after `agent_end` and fires before every tool execution:
+
+```ts
+pi.on("tool_execution_start", async (event) => {
+    for (const connection of orderedConnections()) {
+        if (!connection.ws || connection.ws.readyState !== WebSocket.OPEN || !agentName) continue;
+        connection.ws.send(JSON.stringify({ type: "tool_call", name: event.toolName }));
+    }
+});
+```
+
+This sends a `{ type: "tool_call", name: event.toolName }` message to the broker on every connected room WebSocket before each tool runs. The broker updates `lastToolCallAt`, `lastToolCallName`, and `toolCallsSinceLastMessage` on the agent's record.
+
+### Manual integration test
+
+1. Start the broker: `bun broker.ts`
+2. Launch pi with: `--agent-name Alice --room test`
+3. Execute any tool (e.g. `read`, `bash`)
+4. Verify: `GET /activity/Alice` returns `lastToolCallAt` (ISO string), `lastToolCallName` (tool name), and `toolCallsSinceLastMessage > 0`
