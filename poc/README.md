@@ -20,7 +20,6 @@ This PoC is testing whether there is enough merit in a **long-lived, manager-led
 - [`decision-log.md`](./decision-log.md) — key decisions made so far and why
 - [`session-handoff.md`](./session-handoff.md) — context for the next session
 - [`evidence/evidence-log.md`](./evidence/evidence-log.md) — evidence captured during execution
-- [`deck/slides.md`](./deck/slides.md) — living reveal.js deck plan for the current POC stage
 - [`final-report.md`](./final-report.md) — closure report stub for when the PoC is complete
 
 ## Snapshot
