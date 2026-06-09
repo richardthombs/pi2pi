@@ -27,6 +27,7 @@ type RoomMember = {
 	lastToolCallAt: string | null;
 	lastToolCallName: string | null;
 	toolCallsSinceLastMessage: number;
+	contextPercent: number | null;
 };
 
 type RoomConnection = {
@@ -332,6 +333,7 @@ export default function (pi: ExtensionAPI) {
 						lastToolCallAt: member.lastToolCallAt ?? null,
 						lastToolCallName: member.lastToolCallName ?? null,
 						toolCallsSinceLastMessage: member.toolCallsSinceLastMessage ?? 0,
+						contextPercent: (member as Record<string, unknown>).contextPercent as number | null ?? null,
 					}];
 				});
 				if (connection.roster.length === 0) {
@@ -345,6 +347,7 @@ export default function (pi: ExtensionAPI) {
 						lastToolCallAt: null,
 						lastToolCallName: null,
 						toolCallsSinceLastMessage: 0,
+						contextPercent: null,
 					}));
 				}
 				refreshStatus();
@@ -399,7 +402,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			case "agent_status": {
-				const statusMsg = msg as { name?: string; state?: string; lastToolCallAt?: string; lastToolCallName?: string; toolCallsSinceLastMessage?: number; lastMessageReceivedAt?: string; lastMessageSentAt?: string };
+				const statusMsg = msg as { name?: string; state?: string; lastToolCallAt?: string; lastToolCallName?: string; toolCallsSinceLastMessage?: number; lastMessageReceivedAt?: string; lastMessageSentAt?: string; contextPercent?: number | null };
 				if (statusMsg.name) {
 					const entry = connection.roster.find(m => m.name === statusMsg.name);
 					if (entry) {
@@ -409,6 +412,7 @@ export default function (pi: ExtensionAPI) {
 						if (statusMsg.toolCallsSinceLastMessage !== undefined) entry.toolCallsSinceLastMessage = statusMsg.toolCallsSinceLastMessage ?? 0;
 						if (statusMsg.lastMessageReceivedAt !== undefined) entry.lastMessageReceivedAt = statusMsg.lastMessageReceivedAt ?? null;
 						if (statusMsg.lastMessageSentAt !== undefined) entry.lastMessageSentAt = statusMsg.lastMessageSentAt ?? null;
+					if (statusMsg.contextPercent !== undefined) entry.contextPercent = statusMsg.contextPercent ?? null;
 					}
 				}
 				break;
@@ -522,6 +526,44 @@ export default function (pi: ExtensionAPI) {
 		return box;
 	});
 
+	// ── Status helpers ──────────────────────────────────────────────────────────────────
+
+	function relativeTime(iso: string | null): string {
+		if (!iso) return "—";
+		const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+		if (secs < 60) return `${secs}s ago`;
+		const mins = Math.floor(secs / 60);
+		if (mins < 60) return `${mins}m ago`;
+		const hours = Math.floor(mins / 60);
+		if (hours <= 5) return `${hours}h ago`;
+		return ">5h ago";
+	}
+
+	function activityDescriptor(member: RoomMember, now: Date): string {
+		if (member.state === null) return "unknown";
+		if (member.state === "idle") return "—";
+		// active
+		if (!member.lastToolCallAt) return "waiting";
+		const ageSecs = (now.getTime() - new Date(member.lastToolCallAt).getTime()) / 1000;
+		if (ageSecs <= 120) return member.lastToolCallName ?? "working";
+		return "thinking";
+	}
+
+	function formatStatusLine(member: RoomMember, now: Date): string {
+		const glyph = member.state === "active" ? "◉" : member.state === "idle" ? "○" : "?";
+		const name = (member.displayName ?? member.name).slice(0, 12).padEnd(12);
+		const role = (member.role ?? "").slice(0, 10).padEnd(10);
+		const activity = activityDescriptor(member, now).slice(0, 14).padEnd(14);
+		const timestamps = [member.lastToolCallAt, member.lastMessageSentAt].filter(Boolean).sort() as string[];
+		const elapsed = relativeTime(timestamps.length ? timestamps[timestamps.length - 1] : null).padEnd(10);
+		const pct = member.contextPercent === null || member.contextPercent === undefined
+			? "[—]"
+			: member.contextPercent >= 80
+				? `[${Math.round(member.contextPercent)}%!]`
+				: `[${Math.round(member.contextPercent)}%]`;
+		return `  ${glyph}  ${name}  ${role}  ${activity}  ${elapsed}  ${pct}`;
+	}
+
 	pi.registerMessageRenderer("pi2pi-who", (message, _options, theme) => {
 		const details = message.details as { self: string; roomLabel: string; members: Array<{ displayName: string; role?: string | null; self?: boolean }> } | undefined;
 		const self = details?.self ?? "?";
@@ -537,6 +579,24 @@ export default function (pi: ExtensionAPI) {
 				const role = member.role ? ` — ${member.role}` : "";
 				return theme.fg("success", "  ● ") + theme.fg("accent", member.displayName) + theme.fg("dim", `${role}${suffix}`);
 			}).join("\n");
+		}
+		box.addChild(new Text(text, 0, 0));
+		return box;
+	});
+
+	pi.registerMessageRenderer("pi2pi-status", (message, _options, theme) => {
+		const details = message.details as { roomLabel: string; members: RoomMember[] } | undefined;
+		const roomLabelText = details?.roomLabel ?? "?";
+		const members = details?.members ?? [];
+		const box = new Box(1, 1, t => theme.bg("customMessageBg", t));
+		let text = theme.fg("accent", `── ${roomLabelText} ── ${members.length} agent${members.length !== 1 ? "s" : ""} `) + theme.fg("muted", "
+");
+		if (members.length === 0) {
+			text += theme.fg("muted", "  no agents connected");
+		} else {
+			const now = new Date();
+			text += members.map(m => theme.fg(m.state === "active" ? "success" : "muted", formatStatusLine(m, now))).join("
+");
 		}
 		box.addChild(new Text(text, 0, 0));
 		return box;
@@ -1051,8 +1111,37 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("status", {
 		description: "Show the current status of all agents in a room. Usage: /status [room]",
 		handler: async (args, ctx) => {
-			// TODO: display implementation coming from Edward
-			ctx.ui.notify("Status display coming soon", "info");
+			if (!agentName) {
+				ctx.ui.notify("Pi2Pi: --agent-name is required", "error");
+				return;
+			}
+			let connection: RoomConnection;
+			try {
+				connection = resolveRoom(args.trim() || undefined);
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				return;
+			}
+			const now = new Date();
+			const members = connection.roster.length > 0
+				? [...connection.roster].sort((a, b) => {
+					if (a.state === b.state) return (a.displayName ?? a.name).localeCompare(b.displayName ?? b.name);
+					if (a.state === "active") return -1;
+					if (b.state === "active") return 1;
+					return 0;
+				})
+				: [];
+			const lines = members.length > 0
+				? members.map(m => formatStatusLine(m, now))
+				: ["  no agents connected"];
+			const header = `── ${roomLabel(connection)} ── ${members.length} agent${members.length !== 1 ? "s" : ""} `;
+			pi.sendMessage({
+				customType: "pi2pi-status",
+				content: [header, ...lines].join("
+"),
+				display: true,
+				details: { roomLabel: roomLabel(connection), members },
+			});
 		},
 	});
 
