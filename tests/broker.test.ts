@@ -858,3 +858,162 @@ describe("HTTP /agents endpoint", () => {
 		await leader.close();
 	});
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. AGENT ACTIVITY
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("agent activity", () => {
+	test("GET /activity/:name returns warning for unknown agent", async () => {
+		const resp = await fetch(`http://localhost:${TEST_PORT}/activity/nobody-xyz`);
+		expect(resp.ok).toBe(true);
+		const body = await resp.json() as Record<string, unknown>;
+		expect(body.state).toBe("idle");
+		expect(body.warning).toBe("Agent not connected");
+		expect(body.lastMessageReceivedAt).toBeNull();
+		expect(body.lastMessageSentAt).toBeNull();
+		expect(body.lastToolCallAt).toBeNull();
+		expect(body.lastToolCallName).toBeNull();
+		expect(body.toolCallsSinceLastMessage).toBe(0);
+	});
+
+	test("GET /activity/:name returns idle for connected but silent agent", async () => {
+		const r = nextRoom();
+		const alice = await TestClient.connect();
+		await alice.register("Alice", r);
+
+		const resp = await fetch(`http://localhost:${TEST_PORT}/activity/Alice`);
+		expect(resp.ok).toBe(true);
+		const body = await resp.json() as Record<string, unknown>;
+		expect(body.state).toBe("idle");
+		expect(body.lastMessageReceivedAt).toBeNull();
+		expect(body.lastMessageSentAt).toBeNull();
+		expect(body.lastToolCallAt).toBeNull();
+		expect(body.lastToolCallName).toBeNull();
+		expect(body.toolCallsSinceLastMessage).toBe(0);
+		expect(body.warning).toBeUndefined();
+
+		await alice.close();
+	});
+
+	test("tool_call updates lastToolCallAt, lastToolCallName, and increments counter", async () => {
+		const r = nextRoom();
+		const alice = await TestClient.connect();
+		await alice.register("Alice", r);
+
+		alice.send({ type: "tool_call", name: "read" });
+		await Bun.sleep(10);
+		alice.send({ type: "tool_call", name: "bash" });
+		await Bun.sleep(10);
+
+		const resp = await fetch(`http://localhost:${TEST_PORT}/activity/Alice`);
+		const body = await resp.json() as Record<string, unknown>;
+		expect(body.toolCallsSinceLastMessage).toBe(2);
+		expect(body.lastToolCallName).toBe("bash");
+		expect(typeof body.lastToolCallAt).toBe("string");
+		// Verify it's a valid ISO 8601 date
+		expect(new Date(body.lastToolCallAt as string).getTime()).toBeGreaterThan(0);
+
+		await alice.close();
+	});
+
+	test("tool_call without register returns error", async () => {
+		const ws = await TestClient.connect();
+		ws.send({ type: "tool_call", name: "bash" });
+		const msg = await ws.recv();
+		expect(msg.type).toBe("error");
+		expect(msg.reason).toContain("Must register");
+		await ws.close();
+	});
+
+	test("tool_call with empty name returns error", async () => {
+		const r = nextRoom();
+		const alice = await TestClient.connect();
+		await alice.register("Alice", r);
+		await alice.recvType("agent_list"); // consume the agent_list before sending tool_call
+
+		alice.send({ type: "tool_call", name: "" });
+		const msg = await alice.recv();
+		expect(msg.type).toBe("error");
+		expect(msg.reason).toContain("non-empty name");
+
+		await alice.close();
+	});
+
+	test("receiving a message resets toolCallsSinceLastMessage", async () => {
+		const r = nextRoom();
+		const aliceName = `Alice-reset-${r}`;
+		const bobName = `Bob-reset-${r}`;
+		const alice = await TestClient.connect();
+		const bob = await TestClient.connect();
+		await alice.register(aliceName, r);
+		await alice.recvType("agent_list");
+		await bob.register(bobName, r);
+		// Both get agent_list after Bob joins — drain them
+		await alice.recvType("agent_list");
+		await bob.recvType("agent_list");
+
+		// Alice fires 3 tool_calls
+		alice.send({ type: "tool_call", name: "read" });
+		alice.send({ type: "tool_call", name: "bash" });
+		alice.send({ type: "tool_call", name: "web_search" });
+		await Bun.sleep(50);
+
+		// Verify counter is 3 before message
+		const before = await fetch(`http://localhost:${TEST_PORT}/activity/${aliceName}`);
+		const beforeBody = await before.json() as Record<string, unknown>;
+		expect(beforeBody.toolCallsSinceLastMessage).toBe(3);
+
+		// Bob sends a message to Alice
+		bob.send({ type: "message", id: "msg-reset-1", to: aliceName, content: "hello" });
+		await alice.recvType("incoming");
+		await Bun.sleep(30);
+
+		// Now verify Alice's counter reset and lastMessageReceivedAt is set
+		const after = await fetch(`http://localhost:${TEST_PORT}/activity/${aliceName}`);
+		const afterBody = await after.json() as Record<string, unknown>;
+		expect(afterBody.toolCallsSinceLastMessage).toBe(0);
+		expect(typeof afterBody.lastMessageReceivedAt).toBe("string");
+		expect(new Date(afterBody.lastMessageReceivedAt as string).getTime()).toBeGreaterThan(0);
+
+		await alice.close();
+		await bob.close();
+	});
+
+	test("replying sets lastMessageSentAt", async () => {
+		const r = nextRoom();
+		const aliceName = `Alice-reply-${r}`;
+		const bobName = `Bob-reply-${r}`;
+		const alice = await TestClient.connect();
+		const bob = await TestClient.connect();
+		await alice.register(aliceName, r);
+		await alice.recvType("agent_list");
+		await bob.register(bobName, r);
+		await alice.recvType("agent_list");
+		await bob.recvType("agent_list");
+
+		// Alice sends to Bob
+		alice.send({ type: "message", id: "msg-reply-1", to: bobName, content: "ping" });
+		const incoming = await bob.recvType("incoming");
+		expect(incoming.id).toBe("msg-reply-1");
+
+		// Verify Bob's lastMessageSentAt is null before reply
+		const before = await fetch(`http://localhost:${TEST_PORT}/activity/${bobName}`);
+		const beforeBody = await before.json() as Record<string, unknown>;
+		expect(beforeBody.lastMessageSentAt).toBeNull();
+
+		// Bob replies
+		bob.send({ type: "reply", id: "msg-reply-1", content: "pong" });
+		await alice.recvType("reply_result");
+		await Bun.sleep(30);
+
+		// Now Bob's lastMessageSentAt should be set
+		const after = await fetch(`http://localhost:${TEST_PORT}/activity/${bobName}`);
+		const afterBody = await after.json() as Record<string, unknown>;
+		expect(typeof afterBody.lastMessageSentAt).toBe("string");
+		expect(new Date(afterBody.lastMessageSentAt as string).getTime()).toBeGreaterThan(0);
+
+		await alice.close();
+		await bob.close();
+	});
+});
