@@ -589,14 +589,12 @@ export default function (pi: ExtensionAPI) {
 		const roomLabelText = details?.roomLabel ?? "?";
 		const members = details?.members ?? [];
 		const box = new Box(1, 1, t => theme.bg("customMessageBg", t));
-		let text = theme.fg("accent", `── ${roomLabelText} ── ${members.length} agent${members.length !== 1 ? "s" : ""} `) + theme.fg("muted", "
-");
+		let text = theme.fg("accent", `── ${roomLabelText} ── ${members.length} agent${members.length !== 1 ? "s" : ""} `) + theme.fg("muted", "\n");
 		if (members.length === 0) {
 			text += theme.fg("muted", "  no agents connected");
 		} else {
 			const now = new Date();
-			text += members.map(m => theme.fg(m.state === "active" ? "success" : "muted", formatStatusLine(m, now))).join("
-");
+			text += members.map(m => theme.fg(m.state === "active" ? "success" : "muted", formatStatusLine(m, now))).join("\n");
 		}
 		box.addChild(new Text(text, 0, 0));
 		return box;
@@ -1137,8 +1135,7 @@ export default function (pi: ExtensionAPI) {
 			const header = `── ${roomLabel(connection)} ── ${members.length} agent${members.length !== 1 ? "s" : ""} `;
 			pi.sendMessage({
 				customType: "pi2pi-status",
-				content: [header, ...lines].join("
-"),
+				content: [header, ...lines].join("\n"),
 				display: true,
 				details: { roomLabel: roomLabel(connection), members },
 			});
