@@ -217,15 +217,72 @@ export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: s
 	}
 
 	for (const window of plan.teamWindows) {
-		const [leader, ...others] = window.commands;
-		commands.push([executable, "new-window", "-t", plan.sessionName, "-n", window.name, "-c", window.cwd, leader]);
-		if (others.length > 0) {
-			commands.push([executable, "split-window", "-h", "-t", `${plan.sessionName}:${window.name}`, "-c", window.cwd, others[0]]);
-			for (const command of others.slice(1)) {
-				commands.push([executable, "split-window", "-v", "-t", `${plan.sessionName}:${window.name}`, "-c", window.cwd, command]);
+		const n = window.commands.length;
+		const winTarget = `${plan.sessionName}:${window.name}`;
+
+		// Always create window with leader (first command)
+		commands.push([executable, "new-window", "-t", plan.sessionName, "-n", window.name, "-c", window.cwd, window.commands[0]]);
+
+		if (n > 1) {
+			// Compute balanced column layout
+			const rowsMax = Math.ceil(Math.sqrt(n));
+			const cols    = Math.ceil(n / rowsMax);
+			const base    = Math.floor(n / cols);
+			const extra   = n % cols;
+			// leftmost (cols-extra) columns get base panes; rightmost extra columns get base+1
+			const colSizes = Array.from({ length: cols }, (_, i) => i < cols - extra ? base : base + 1);
+
+			// Assign commands to columns
+			let offset = 0;
+			const colCmds = colSizes.map(size => {
+				const slice = window.commands.slice(offset, offset + size);
+				offset += size;
+				return slice;
+			});
+
+			// Track pane indices (tmux assigns sequential indices 0, 1, 2, …)
+			let nextPane = 1;
+			const colAnchor: number[] = [0]; // pane index of first pane in each column
+
+			// Phase 1: carve equal-width columns via horizontal splits
+			// p% goes to the NEW right pane; (100-p)% stays with current pane = one column
+			let rightmostZone = 0;
+			let remainingCols = cols;
+			for (let j = 1; j < cols; j++) {
+				const p = Math.round((remainingCols - 1) * 100 / remainingCols);
+				commands.push([
+					executable, "split-window",
+					"-t", `${winTarget}.${rightmostZone}`,
+					"-h", "-p", String(p),
+					"-c", window.cwd,
+					colCmds[j][0],
+				]);
+				colAnchor.push(nextPane);
+				rightmostZone = nextPane++;
+				remainingCols--;
 			}
-			commands.push([executable, "select-pane", "-t", `${plan.sessionName}:${window.name}.0`]);
-			commands.push([executable, "select-layout", "-t", `${plan.sessionName}:${window.name}`, "tiled"]);
+
+			// Phase 2: fill each column with its remaining panes via vertical splits
+			for (let j = 0; j < cols; j++) {
+				const s = colSizes[j];
+				let currentPane = colAnchor[j];
+				for (let k = 1; k < s; k++) {
+					// p% goes to NEW bottom pane; current pane keeps (100-p)% = 1/s of column height
+					const p = Math.round((s - k) * 100 / (s - k + 1));
+					commands.push([
+						executable, "split-window",
+						"-t", `${winTarget}.${currentPane}`,
+						"-v", "-p", String(p),
+						"-c", window.cwd,
+						colCmds[j][k],
+					]);
+					currentPane = nextPane++;
+				}
+			}
+
+			// Focus leader pane (top-left = pane 0)
+			commands.push([executable, "select-pane", "-t", `${winTarget}.0`]);
+			// No select-layout — exact layout is set by the splits above
 		}
 	}
 
