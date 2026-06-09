@@ -187,6 +187,14 @@ function tmuxLikeSessionSize(plan: ReturnType<typeof buildTmuxLikePlan>): { widt
 	return { width, height };
 }
 
+export function tmuxLayoutName(n: number): string {
+	if (n <= 1) return "tiled";
+	const cols = Math.ceil(Math.sqrt(n));
+	const rows = Math.ceil(n / cols);
+	const spare = cols * rows - n;
+	return spare === 0 ? "tiled" : "main-vertical";
+}
+
 export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: string, kind: "tmux" | "psmux"): string[][] {
 	const plan = buildTmuxLikePlan(loaded, kind === "psmux");
 	const size = tmuxLikeSessionSize(plan);
@@ -225,7 +233,7 @@ export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: s
 				commands.push([executable, "split-window", "-v", "-t", `${plan.sessionName}:${window.name}`, "-c", window.cwd, command]);
 			}
 			commands.push([executable, "select-pane", "-t", `${plan.sessionName}:${window.name}.0`]);
-			commands.push([executable, "select-layout", "-t", `${plan.sessionName}:${window.name}`, "tiled"]);
+			commands.push([executable, "select-layout", "-t", `${plan.sessionName}:${window.name}`, tmuxLayoutName(window.commands.length)]);
 		}
 	}
 
@@ -252,16 +260,47 @@ export function cmuxLayoutForCommands(commands: string[]) {
 		return { pane: { surfaces: [{ type: "terminal", command: cmd }] } };
 	}
 
-	function equalHorizontal(cmds: string[]): LayoutNode {
+	function buildColumn(cmds: string[]): LayoutNode {
 		if (cmds.length === 1) return pane(cmds[0]);
 		return {
-			direction: "horizontal",
+			direction: "vertical",
 			split: 1 / cmds.length,
-			children: [pane(cmds[0]), equalHorizontal(cmds.slice(1))],
+			children: [pane(cmds[0]), buildColumn(cmds.slice(1))],
 		};
 	}
 
-	return equalHorizontal(commands);
+	function buildColumns(cmds: string[], cols: number): LayoutNode {
+		if (cols === 1 || cmds.length <= 1) return buildColumn(cmds);
+		const perCol = Math.ceil(cmds.length / cols);
+		const firstCol = cmds.slice(0, perCol);
+		const rest = cmds.slice(perCol);
+		if (rest.length === 0) return buildColumn(firstCol);
+		return {
+			direction: "horizontal",
+			split: 1 / cols,
+			children: [buildColumn(firstCol), buildColumns(rest, cols - 1)],
+		};
+	}
+
+	const n = commands.length;
+	if (n === 0) throw new Error("cmuxLayoutForCommands: no commands");
+	if (n === 1) return pane(commands[0]);
+
+	const cols = Math.ceil(Math.sqrt(n));
+	const rows = Math.ceil(n / cols);
+	const spare = cols * rows - n;
+
+	if (spare === 0) {
+		return buildColumns(commands, cols);
+	}
+
+	// Leader takes full left column; others fill remaining cols-1 columns
+	const [leader, ...others] = commands;
+	return {
+		direction: "horizontal",
+		split: 1 / cols,
+		children: [pane(leader), buildColumns(others, cols - 1)],
+	};
 }
 
 function runCmuxStart(loaded: LoadedConfig, mux: SelectedMultiplexer): void {

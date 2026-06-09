@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import type { LoadedConfig } from "../config-store";
 import { defaultConfig } from "../config-store";
-import { buildTmuxLikeCommandSequence, cmuxLayoutForCommands, selectMultiplexerKind } from "../multiplexer";
+import { buildTmuxLikeCommandSequence, cmuxLayoutForCommands, selectMultiplexerKind, tmuxLayoutName } from "../multiplexer";
 
 function git(args: string[], cwd?: string): string {
 	const proc = Bun.spawnSync(["git", ...args], {
@@ -95,70 +95,97 @@ describe("tmux-like command generation", () => {
 		expect(commands.some(command => command.includes("new-window") && command.includes("broker"))).toBe(true);
 		expect(commands.some(command => command.includes("new-window") && command.includes("engineering"))).toBe(true);
 		expect(commands.some(command => command.includes("split-window") && command.includes("pi2pi-org:engineering"))).toBe(true);
+		// 2 members → 2×1, spare=0 → "tiled"
 		expect(commands.some(command => command.includes("select-layout") && command.includes("tiled"))).toBe(true);
 	});
 });
 
-describe("cmux equal-pane layout", () => {
-	const TOLERANCE = 1e-10;
+describe("cmux grid layout", () => {
+	const T = 1e-10;
 
-	function totalWidth(node: ReturnType<typeof cmuxLayoutForCommands>, inherited = 1): number[] {
-		if ("pane" in node) return [inherited];
-		const left = inherited * node.split;
-		const right = inherited * (1 - node.split);
-		return [...totalWidth(node.children[0], left), ...totalWidth(node.children[1], right)];
+	type LayoutNode = ReturnType<typeof cmuxLayoutForCommands>;
+
+	function paneAreas(node: LayoutNode, w = 1, h = 1): Array<{ width: number; height: number }> {
+		if ("pane" in node) return [{ width: w, height: h }];
+		if (node.direction === "horizontal") {
+			return [
+				...paneAreas(node.children[0], w * node.split, h),
+				...paneAreas(node.children[1], w * (1 - node.split), h),
+			];
+		} else {
+			return [
+				...paneAreas(node.children[0], w, h * node.split),
+				...paneAreas(node.children[1], w, h * (1 - node.split)),
+			];
+		}
 	}
 
-	test("1 command — single pane, no split", () => {
-		const layout = cmuxLayoutForCommands(["cmd1"]);
+	function inOrder(node: LayoutNode): string[] {
+		if ("pane" in node) return [node.pane.surfaces[0].command];
+		return [...inOrder(node.children[0]), ...inOrder(node.children[1])];
+	}
+
+	test("n=1 -- single pane node, no split", () => {
+		const layout = cmuxLayoutForCommands(["a"]);
 		expect("pane" in layout).toBe(true);
-		if ("pane" in layout) {
-			expect(layout.pane.surfaces[0].command).toBe("cmd1");
-		}
 	});
 
-	test("2 commands — each pane gets 1/2 of total width", () => {
-		const layout = cmuxLayoutForCommands(["cmd1", "cmd2"]);
-		const widths = totalWidth(layout);
-		expect(widths).toHaveLength(2);
-		for (const w of widths) expect(Math.abs(w - 1 / 2)).toBeLessThan(TOLERANCE);
+	test("n=2 (2x1, spare=0) -- 2 equal panes, area = 0.5 each", () => {
+		const areas = paneAreas(cmuxLayoutForCommands(["a", "b"]));
+		expect(areas).toHaveLength(2);
+		for (const a of areas) expect(Math.abs(a.width * a.height - 0.5)).toBeLessThan(T);
 	});
 
-	test("3 commands — each pane gets 1/3 of total width", () => {
-		const layout = cmuxLayoutForCommands(["cmd1", "cmd2", "cmd3"]);
-		const widths = totalWidth(layout);
-		expect(widths).toHaveLength(3);
-		for (const w of widths) expect(Math.abs(w - 1 / 3)).toBeLessThan(TOLERANCE);
+	test("n=3 (2x2, spare=1) -- leader area = 0.5, height = 1, others = 0.25 each", () => {
+		const areas = paneAreas(cmuxLayoutForCommands(["leader", "b", "c"]));
+		expect(areas).toHaveLength(3);
+		expect(Math.abs(areas[0].width - 0.5)).toBeLessThan(T);
+		expect(Math.abs(areas[0].height - 1)).toBeLessThan(T);
+		for (const a of areas.slice(1)) expect(Math.abs(a.width * a.height - 0.25)).toBeLessThan(T);
 	});
 
-	test("4 commands — each pane gets 1/4 of total width", () => {
-		const layout = cmuxLayoutForCommands(["cmd1", "cmd2", "cmd3", "cmd4"]);
-		const widths = totalWidth(layout);
-		expect(widths).toHaveLength(4);
-		for (const w of widths) expect(Math.abs(w - 1 / 4)).toBeLessThan(TOLERANCE);
+	test("n=4 (2x2, spare=0) -- all areas = 0.25", () => {
+		const areas = paneAreas(cmuxLayoutForCommands(["a", "b", "c", "d"]));
+		expect(areas).toHaveLength(4);
+		for (const a of areas) expect(Math.abs(a.width * a.height - 0.25)).toBeLessThan(T);
 	});
 
-	test("commands are embedded in pane surfaces in order", () => {
-		const cmds = ["alpha", "beta", "gamma"];
-		const layout = cmuxLayoutForCommands(cmds);
-		const collected: string[] = [];
-		function collect(node: ReturnType<typeof cmuxLayoutForCommands>): void {
-			if ("pane" in node) { collected.push(node.pane.surfaces[0].command); return; }
-			collect(node.children[0]);
-			collect(node.children[1]);
-		}
-		collect(layout);
-		expect(collected).toEqual(cmds);
+	test("n=5 (3x2, spare=1) -- leader area = 1/3, others = 1/6 each", () => {
+		const areas = paneAreas(cmuxLayoutForCommands(["a", "b", "c", "d", "e"]));
+		expect(areas).toHaveLength(5);
+		expect(Math.abs(areas[0].width * areas[0].height - 1 / 3)).toBeLessThan(T);
+		for (const a of areas.slice(1)) expect(Math.abs(a.width * a.height - 1 / 6)).toBeLessThan(T);
 	});
 
-	test("all splits use horizontal direction", () => {
-		const layout = cmuxLayoutForCommands(["a", "b", "c", "d"]);
-		function checkDirs(node: ReturnType<typeof cmuxLayoutForCommands>): void {
-			if ("pane" in node) return;
-			expect(node.direction).toBe("horizontal");
-			checkDirs(node.children[0]);
-			checkDirs(node.children[1]);
-		}
-		checkDirs(layout);
+	test("n=6 (3x2, spare=0) -- all areas = 1/6", () => {
+		const areas = paneAreas(cmuxLayoutForCommands(["a", "b", "c", "d", "e", "f"]));
+		expect(areas).toHaveLength(6);
+		for (const a of areas) expect(Math.abs(a.width * a.height - 1 / 6)).toBeLessThan(T);
+	});
+
+	test("commands appear in input order via in-order traversal", () => {
+		const cmds = ["alpha", "beta", "gamma", "delta"];
+		expect(inOrder(cmuxLayoutForCommands(cmds))).toEqual(cmds);
+	});
+
+	test("n=0 throws", () => {
+		expect(() => cmuxLayoutForCommands([])).toThrow();
+	});
+});
+
+describe("tmuxLayoutName", () => {
+	test("spare=0 cases use tiled", () => {
+		expect(tmuxLayoutName(1)).toBe("tiled");
+		expect(tmuxLayoutName(2)).toBe("tiled");
+		expect(tmuxLayoutName(4)).toBe("tiled");
+		expect(tmuxLayoutName(6)).toBe("tiled");
+		expect(tmuxLayoutName(9)).toBe("tiled");
+	});
+
+	test("spare>0 cases use main-vertical", () => {
+		expect(tmuxLayoutName(3)).toBe("main-vertical");
+		expect(tmuxLayoutName(5)).toBe("main-vertical");
+		expect(tmuxLayoutName(7)).toBe("main-vertical");
+		expect(tmuxLayoutName(8)).toBe("main-vertical");
 	});
 });
