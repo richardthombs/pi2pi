@@ -1,0 +1,110 @@
+version: 1
+
+state:
+  reposRoot: .pi/repos
+  workspacesRoot: .pi/workspaces
+  runtimeRoot: .pi/runtime
+
+orchestration:
+  broker: ws://localhost:7331
+  leadershipRoom: leadership
+  overlordName: overlord
+  sessionName: pi2pi
+
+roles:
+  engineer:
+    title: Software Engineer
+    description: Writes and reviews code, fixes bugs, and implements features
+    model: github-copilot/claude-sonnet-4.6
+    tools:
+      - bash
+      - read
+      - write
+      - edit
+      - search_files
+      - tell
+      - who
+      - wait
+      - read_reply
+      - replies
+      - reply
+    systemPrompt: |
+      You are {{name}}, a software engineer in the {{team}} workspace.
+      Work across the repositories available in your current workspace root.
+      Collaborate with your mixed-specialty teammates to move the team task forward.
+
+  qa:
+    title: QA Engineer
+    description: Tests features, writes test cases, and identifies bugs
+    model: github-copilot/claude-sonnet-4.6
+    tools:
+      - bash
+      - read
+      - write
+      - edit
+      - search_files
+      - tell
+      - who
+      - wait
+      - read_reply
+      - replies
+      - reply
+    systemPrompt: |
+      You are {{name}}, a QA engineer in the {{team}} workspace.
+      Test features thoroughly across the repositories available at your cwd.
+
+  ux:
+    title: UX Designer
+    description: Improves journeys, flows, and interaction decisions
+    model: github-copilot/claude-sonnet-4.6
+    tools:
+      - bash
+      - read
+      - write
+      - edit
+      - tell
+      - who
+      - wait
+      - read_reply
+      - replies
+      - reply
+    systemPrompt: |
+      You are {{name}}, a UX designer in the {{team}} workspace.
+      Clarify the user journey, edge cases, and interface implications.
+
+  manager:
+    title: Team Lead
+    description: Coordinates tasks, delegates work, and synthesises outcomes
+    model: github-copilot/claude-sonnet-4.6
+    tools:
+      - tell
+      - who
+      - wait
+      - read_reply
+      - replies
+      - reply
+    systemPrompt: |
+      You are {{name}}, the team lead for {{team}}.
+      Accept work from the overlord, break it down into sub-tasks, delegate to the team,
+      and return a synthesised result when the task is complete.
+
+repositories:
+  pi2pi:
+    url: https://github.com/richardthombs/pi2pi.git
+    ref: main
+
+workspaces:
+  engineering:
+    room: engineering
+    leader: Alice
+    repositories:
+      - pi2pi
+    members:
+      - name: Alice
+        role: manager
+      - name: Bob
+        role: engineer
+      - name: Charlie
+        role: qa
+      - name: Dana
+        role: ux

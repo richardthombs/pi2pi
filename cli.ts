@@ -1,0 +1,346 @@
+#!/usr/bin/env bun
+import {
+	assertSimpleKey,
+	deriveRepoName,
+	ensureStateDirectories,
+	leadershipRoomName,
+	loadConfig,
+	orchestrationSessionName,
+	overlordName,
+	saveConfig,
+	type LoadedConfig,
+} from "./config-store";
+import { buildOverlordArgs, getWorkspaceProcessStatus } from "./process-manager";
+import { attachOrchestration, orchestrationStatus, startOrchestration, stopOrchestration } from "./multiplexer";
+import { ensureWorkspaceLayout } from "./workspace-manager";
+
+interface ParsedCli {
+	configPath?: string;
+	args: string[];
+}
+
+function parseCli(argv: string[]): ParsedCli {
+	const args: string[] = [];
+	let configPath: string | undefined;
+
+	for (let i = 0; i < argv.length; i++) {
+		if (argv[i] === "--config") {
+			configPath = argv[i + 1];
+			i += 1;
+			continue;
+		}
+		args.push(argv[i]);
+	}
+
+	return { configPath, args };
+}
+
+function usage(): never {
+	console.error(`Usage:
+  bun cli.ts repos add <url> [name]
+  bun cli.ts repos list
+  bun cli.ts roles add <name> <model> [title]
+  bun cli.ts roles list
+  bun cli.ts orchestration show
+  bun cli.ts orchestration set broker <url>
+  bun cli.ts orchestration set leadership-room <room>
+  bun cli.ts orchestration set overlord-name <name>
+  bun cli.ts orchestration set session-name <name>
+  bun cli.ts orchestration start
+  bun cli.ts orchestration attach
+  bun cli.ts orchestration stop
+  bun cli.ts orchestration status
+  bun cli.ts overlord command
+  bun cli.ts overlord start
+  bun cli.ts workspace create <name>
+  bun cli.ts workspace list
+  bun cli.ts workspace <name> add repo <repo>
+  bun cli.ts workspace <name> add member <member-name> <role>
+  bun cli.ts workspace <name> set broker <url>
+  bun cli.ts workspace <name> set room <room>
+  bun cli.ts workspace <name> set leader <member-name>
+  bun cli.ts workspace <name> init
+  bun cli.ts workspace <name> status
+
+Optional:
+  --config <path>   Use a different config file (default: .pi/config.yaml)`);
+	process.exit(1);
+}
+
+function requireWorkspace(loaded: LoadedConfig, workspaceName: string) {
+	const workspace = loaded.config.workspaces[workspaceName];
+	if (!workspace) throw new Error(`Unknown workspace: ${workspaceName}`);
+	return workspace;
+}
+
+function printStatus(workspaceName: string, status: ReturnType<typeof getWorkspaceProcessStatus>): void {
+	console.log(`Workspace: ${workspaceName}`);
+	console.log(`Root: ${status.workspaceRoot}`);
+	for (const member of status.members) {
+		const state = member.running ? `running (pid ${member.pid})` : "stopped";
+		const leader = member.leader ? " leader" : "";
+		console.log(`- ${member.name}${leader} -> ${member.handle} [${member.role}] ${state} rooms=${member.rooms.join(", ")}`);
+	}
+}
+
+function handleRepos(loaded: LoadedConfig, args: string[]): void {
+	const action = args[0];
+	if (action === "add") {
+		const url = args[1];
+		if (!url) usage();
+		const name = args[2] ?? deriveRepoName(url);
+		assertSimpleKey("repository name", name);
+		if (loaded.config.repositories[name]) throw new Error(`Repository already exists: ${name}`);
+		loaded.config.repositories[name] = { url, ref: "main" };
+		saveConfig(loaded);
+		console.log(`Added repository ${name} -> ${url}`);
+		return;
+	}
+
+	if (action === "list") {
+		const repos = Object.entries(loaded.config.repositories);
+		if (repos.length === 0) {
+			console.log("No repositories configured.");
+			return;
+		}
+		for (const [name, repo] of repos) {
+			console.log(`- ${name}: ${repo.url}${repo.ref ? ` @ ${repo.ref}` : ""}`);
+		}
+		return;
+	}
+
+	usage();
+}
+
+function handleRoles(loaded: LoadedConfig, args: string[]): void {
+	if (args[0] === "add") {
+		const roleName = args[1];
+		const model = args[2];
+		const title = args.slice(3).join(" ") || roleName;
+		if (!roleName || !model) usage();
+		assertSimpleKey("role name", roleName);
+		if (loaded.config.roles[roleName]) throw new Error(`Role already exists: ${roleName}`);
+		loaded.config.roles[roleName] = {
+			title,
+			model,
+			systemPrompt: "You are {{name}} working in the {{team}} workspace.",
+			tools: "all",
+		};
+		saveConfig(loaded);
+		console.log(`Added role ${roleName} (${model}). Edit the config file to refine tools and system prompt.`);
+		return;
+	}
+
+	if (args[0] !== "list") usage();
+	const roles = Object.entries(loaded.config.roles);
+	if (roles.length === 0) {
+		console.log("No roles configured.");
+		return;
+	}
+	for (const [name, role] of roles) {
+		console.log(`- ${name}: ${role.title} (${role.model})`);
+	}
+}
+
+function handleOrchestration(loaded: LoadedConfig, args: string[]): void {
+	if (args[0] === "show") {
+		console.log(`Broker: ${loaded.config.orchestration.broker}`);
+		console.log(`Leadership room: ${leadershipRoomName(loaded.config)}`);
+		console.log(`Overlord name: ${overlordName(loaded.config)}`);
+		console.log(`Session name: ${orchestrationSessionName(loaded.config)}`);
+		return;
+	}
+
+	if (args[0] === "set") {
+		const target = args[1];
+		const value = args[2];
+		if (!target || !value) usage();
+		if (target === "broker") {
+			loaded.config.orchestration.broker = value;
+		} else if (target === "leadership-room") {
+			assertSimpleKey("leadership room", value);
+			loaded.config.orchestration.leadershipRoom = value;
+		} else if (target === "overlord-name") {
+			assertSimpleKey("overlord name", value);
+			loaded.config.orchestration.overlordName = value;
+		} else if (target === "session-name") {
+			assertSimpleKey("session name", value);
+			loaded.config.orchestration.sessionName = value;
+		} else {
+			usage();
+		}
+		saveConfig(loaded);
+		console.log(`Updated orchestration ${target} to ${value}`);
+		return;
+	}
+
+	if (args[0] === "start") {
+		const mux = startOrchestration(loaded);
+		console.log(`Started orchestration using ${mux.kind}.`);
+		return;
+	}
+
+	if (args[0] === "attach") {
+		const mux = attachOrchestration(loaded);
+		console.log(`Attached via ${mux.kind}.`);
+		return;
+	}
+
+	if (args[0] === "stop") {
+		const mux = stopOrchestration(loaded);
+		console.log(`Stopped orchestration using ${mux.kind}.`);
+		return;
+	}
+
+	if (args[0] === "status") {
+		const status = orchestrationStatus(loaded);
+		console.log(`Backend: ${status.backend}`);
+		console.log(`Session: ${status.sessionName}`);
+		console.log(`Available: ${status.available ? "yes" : "no"}`);
+		return;
+	}
+
+	usage();
+}
+
+function handleOverlord(loaded: LoadedConfig, args: string[]): void {
+	const action = args[0];
+	const command = buildOverlordArgs(loaded);
+
+	if (action === "command") {
+		console.log(command.map(arg => /\s/.test(arg) ? JSON.stringify(arg) : arg).join(" "));
+		return;
+	}
+
+	if (action === "start") {
+		const proc = Bun.spawnSync(command, {
+			cwd: loaded.configDir,
+			stdio: ["inherit", "inherit", "inherit"],
+		});
+		process.exit(proc.exitCode ?? 0);
+	}
+
+	usage();
+}
+
+function handleWorkspace(loaded: LoadedConfig, args: string[]): void {
+	if (args[0] === "create") {
+		const workspaceName = args[1];
+		if (!workspaceName) usage();
+		assertSimpleKey("workspace name", workspaceName);
+		if (loaded.config.workspaces[workspaceName]) throw new Error(`Workspace already exists: ${workspaceName}`);
+		loaded.config.workspaces[workspaceName] = { room: workspaceName, repositories: [], members: [] };
+		saveConfig(loaded);
+		ensureStateDirectories(loaded);
+		console.log(`Created workspace ${workspaceName}`);
+		return;
+	}
+
+	if (args[0] === "list") {
+		const workspaces = Object.entries(loaded.config.workspaces);
+		if (workspaces.length === 0) {
+			console.log("No workspaces configured.");
+			return;
+		}
+		for (const [name, workspace] of workspaces) {
+			const leader = workspace.leader ? ` leader=${workspace.leader}` : "";
+			console.log(`- ${name}: room=${workspace.room ?? name}, ${workspace.repositories.length} repos, ${workspace.members.length} members${leader}`);
+		}
+		return;
+	}
+
+	const workspaceName = args[0];
+	if (!workspaceName) usage();
+	const workspace = requireWorkspace(loaded, workspaceName);
+	const action = args[1];
+
+	if (action === "add") {
+		const target = args[2];
+		if (target === "repo") {
+			const repoName = args[3];
+			if (!repoName) usage();
+			if (!loaded.config.repositories[repoName]) throw new Error(`Unknown repository: ${repoName}`);
+			if (!workspace.repositories.includes(repoName)) workspace.repositories.push(repoName);
+			saveConfig(loaded);
+			console.log(`Added repository ${repoName} to workspace ${workspaceName}`);
+			return;
+		}
+
+		if (target === "member") {
+			const memberName = args[3];
+			const roleName = args[4];
+			if (!memberName || !roleName) usage();
+			if (!loaded.config.roles[roleName]) throw new Error(`Unknown role: ${roleName}`);
+			if (workspace.members.some(member => member.name === memberName)) throw new Error(`Member already exists: ${memberName}`);
+			workspace.members.push({ name: memberName, role: roleName });
+			saveConfig(loaded);
+			console.log(`Added member ${memberName} (${roleName}) to workspace ${workspaceName}`);
+			return;
+		}
+	}
+
+	if (action === "set") {
+		const target = args[2];
+		const value = args[3];
+		if (!target || !value) usage();
+		if (target === "broker") {
+			workspace.broker = value;
+		} else if (target === "room") {
+			assertSimpleKey("workspace room", value);
+			workspace.room = value;
+		} else if (target === "leader") {
+			if (!workspace.members.some(member => member.name === value)) throw new Error(`Unknown member for leader: ${value}`);
+			workspace.leader = value;
+		} else {
+			usage();
+		}
+		saveConfig(loaded);
+		console.log(`Set ${target} for workspace ${workspaceName} to ${value}`);
+		return;
+	}
+
+	if (action === "init") {
+		const layout = ensureWorkspaceLayout(loaded, workspaceName);
+		console.log(`Initialised workspace ${workspaceName} at ${layout.workspaceRoot}`);
+		for (const [repoName, repoPath] of Object.entries(layout.repoPaths)) {
+			console.log(`- ${repoName}: ${repoPath}`);
+		}
+		return;
+	}
+
+	if (action === "start" || action === "stop") {
+		throw new Error(`Workspace ${action} is no longer supported directly. Use \"bun cli.ts orchestration ${action}\" instead.`);
+	}
+
+	if (action === "status") {
+		const status = getWorkspaceProcessStatus(loaded, workspaceName);
+		printStatus(workspaceName, status);
+		return;
+	}
+
+	usage();
+}
+
+try {
+	const parsed = parseCli(process.argv.slice(2));
+	if (parsed.args.length === 0) usage();
+	const loaded = loadConfig(parsed.configPath);
+	const [entity, ...args] = parsed.args;
+
+	if (entity === "repos") {
+		handleRepos(loaded, args);
+	} else if (entity === "roles") {
+		handleRoles(loaded, args);
+	} else if (entity === "orchestration") {
+		handleOrchestration(loaded, args);
+	} else if (entity === "overlord") {
+		handleOverlord(loaded, args);
+	} else if (entity === "workspace") {
+		handleWorkspace(loaded, args);
+	} else {
+		usage();
+	}
+} catch (error) {
+	console.error(error instanceof Error ? error.message : String(error));
+	process.exit(1);
+}

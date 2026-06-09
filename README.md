@@ -63,12 +63,101 @@ In Alice's session:
 
 Bob's session shows the message as a user turn so he can see what was asked.
 
+## Workspace CLI (experimental)
+
+The repo now includes a workspace-oriented CLI for managing shared repositories, shared role definitions, mixed-specialty team workspaces, leadership-room coordination, and multiplexer-backed orchestration sessions.
+
+### Config model
+
+Use a shared config file (default: `.pi/config.yaml`) with top-level:
+
+- `orchestration` — shared broker / leadership-room / session settings for the overlord + team leads
+- `roles` — shared across all workspaces
+- `repositories` — cloned once into `.pi/repos/`
+- `workspaces` — each workspace gets its own worktree per required repo under `.pi/workspaces/<workspace>/`
+
+Each workspace should define:
+- `room` — the team room name
+- `leader` — the member who joins both the team room and the shared leadership room
+- `members` — a mixed-specialty team (for example lead, devs, QA, UX, planner)
+
+An example lives at [`example-workspaces.yaml`](./example-workspaces.yaml).
+
+### Common commands
+
+```bash
+# Add a repository to the shared catalog
+bun cli.ts repos add https://github.com/richardthombs/pi2pi.git
+
+# Configure orchestration-wide settings
+bun cli.ts orchestration set leadership-room leadership
+bun cli.ts orchestration set broker ws://localhost:7331
+bun cli.ts orchestration set session-name pi2pi
+
+# Create a workspace / team
+bun cli.ts workspace create engineering
+
+# Attach a shared repo to that workspace
+bun cli.ts workspace engineering add repo pi2pi
+
+# Roles are shared globally; create or list them once
+bun cli.ts roles add manager github-copilot/claude-sonnet-4.6 "Project Manager"
+bun cli.ts roles list
+
+# Add members to the team using shared role definitions
+bun cli.ts workspace engineering add member Alice manager
+bun cli.ts workspace engineering add member Bob engineer
+bun cli.ts workspace engineering add member Charlie qa
+
+# Mark the team leader (this member joins both team + leadership rooms)
+bun cli.ts workspace engineering set leader Alice
+
+# Optional: override the team room or broker per workspace
+bun cli.ts workspace engineering set room engineering
+bun cli.ts workspace engineering set broker ws://localhost:7331
+
+# Materialize the workspace worktrees
+bun cli.ts workspace engineering init
+
+# Inspect how a workspace will be launched
+bun cli.ts workspace engineering status
+
+# Launch the full organisation session:
+# - leadership window with the overlord
+# - one team window per workspace
+bun cli.ts orchestration start
+
+# Reattach / stop the session later
+bun cli.ts orchestration attach
+bun cli.ts orchestration stop
+```
+
+When orchestration starts, every team member is launched with its working directory set to that team's workspace root, so all assigned repository worktrees are available as sibling directories.
+
+Leaders are launched into two rooms:
+- `team` → their own workspace room
+- `leadership` → the shared room containing the overlord plus every team lead
+
+The leader handle is `<workspace>.lead`, so the overlord can discover active teams by running `who` in the leadership room.
+
+Multiplexer backend policy:
+- **Windows** → `psmux` only, otherwise error
+- **macOS** → prefer `cmux`, fallback to `tmux`, otherwise error
+- **Linux** → `tmux` only, otherwise error
+
+Layout policy:
+- **tmux / psmux** → one session, one `leadership` window, one window per team
+- **cmux** → one top-level cmux window per logical window/workspace created by the launcher
+- each team window/workspace puts the leader on the left and stacks the remaining specialists on the right
+
 ## Options
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--agent-name <name>` | **Required**. Name for this pi instance. | — |
-| `--room <room>` | **Required**. Room to join — only agents in the same room can see and message each other. | — |
+| `--room <room>` | Join a single room. Backwards-compatible shortcut for `--rooms <room>`. | — |
+| `--rooms <bindings>` | Join one or more rooms, e.g. `team=engineering,leadership=leadership`. | — |
+| `--default-room <alias>` | Default room alias used when `tell` / `who` omit a room. | first configured room |
 | `--broker <url>` | WebSocket URL of the broker. | `ws://localhost:7331` |
 
 ## Broker HTTP endpoint
