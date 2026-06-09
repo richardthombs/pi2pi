@@ -129,8 +129,9 @@ bun cli.ts workspace engineering status
 # - one team window per workspace
 bun cli.ts orchestration start
 
-# Reattach / stop the session later
+# Reattach / restart / stop the session later
 bun cli.ts orchestration attach
+bun cli.ts orchestration restart
 bun cli.ts orchestration stop
 ```
 

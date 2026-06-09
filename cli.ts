@@ -47,6 +47,7 @@ function usage(): never {
   bun cli.ts orchestration set overlord-name <name>
   bun cli.ts orchestration set session-name <name>
   bun cli.ts orchestration start
+  bun cli.ts orchestration restart
   bun cli.ts orchestration attach
   bun cli.ts orchestration stop
   bun cli.ts orchestration status
@@ -177,6 +178,14 @@ function handleOrchestration(loaded: LoadedConfig, args: string[]): void {
 	if (args[0] === "start") {
 		const mux = startOrchestration(loaded);
 		console.log(`Started orchestration using ${mux.kind}.`);
+		return;
+	}
+
+	if (args[0] === "restart") {
+		const status = orchestrationStatus(loaded);
+		if (status.available) stopOrchestration(loaded);
+		const mux = startOrchestration(loaded);
+		console.log(`${status.available ? "Restarted" : "Started"} orchestration using ${mux.kind}.`);
 		return;
 	}
 
