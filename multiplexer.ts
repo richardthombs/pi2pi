@@ -187,6 +187,84 @@ function tmuxLikeSessionSize(plan: ReturnType<typeof buildTmuxLikePlan>): { widt
 	return { width, height };
 }
 
+/**
+ * Pure function: returns the split-window and select-pane commands needed to
+ * arrange agentCommands into a balanced grid inside an already-created window.
+ * Does NOT include new-session or new-window — caller creates those.
+ */
+export function buildColumnSplitCommands(
+	executable: string,
+	sessionName: string,
+	windowName: string,
+	cwd: string,
+	agentCommands: string[],
+): string[][] {
+	const n = agentCommands.length;
+	if (n <= 1) return []; // single pane — nothing to split
+
+	const winTarget = `${sessionName}:${windowName}`;
+	const result: string[][] = [];
+
+	// Compute balanced column layout
+	const rowsMax = Math.ceil(Math.sqrt(n));
+	const cols    = Math.ceil(n / rowsMax);
+	const base    = Math.floor(n / cols);
+	const extra   = n % cols;
+	// leftmost (cols-extra) columns get base panes; rightmost extra get base+1
+	const colSizes = Array.from({ length: cols }, (_, i) => i < cols - extra ? base : base + 1);
+
+	// Assign commands to columns
+	let cmdOffset = 0;
+	const colCmds = colSizes.map(size => {
+		const slice = agentCommands.slice(cmdOffset, cmdOffset + size);
+		cmdOffset += size;
+		return slice;
+	});
+
+	// offsets[j] = sum of colSizes[0..j-1] = positional index of col j's anchor pane during Phase 2.
+	// V-splits insert at position anchor+k, renumbering later panes, so offsets correctly tracks anchors.
+	let cumulative = 0;
+	const offsets = colSizes.map(s => { const o = cumulative; cumulative += s; return o; });
+
+	// Phase 1: horizontal splits to carve equal-width columns.
+	// H-splits don't renumber earlier panes; after j H-splits the rightmost zone is pane j.
+	let rightmostZone = 0;
+	let remainingCols = cols;
+	for (let j = 1; j < cols; j++) {
+		const p = Math.round((remainingCols - 1) * 100 / remainingCols);
+		result.push([
+			executable, "split-window",
+			"-t", `${winTarget}.${rightmostZone}`,
+			"-h", "-p", String(p),
+			"-c", cwd,
+			colCmds[j][0],
+		]);
+		rightmostZone = j;
+		remainingCols--;
+	}
+
+	// Phase 2: vertical fills.
+	// Column j's anchor is offsets[j]; each V-split k targets offsets[j]+(k-1).
+	for (let j = 0; j < cols; j++) {
+		const s = colSizes[j];
+		for (let k = 1; k < s; k++) {
+			const target = offsets[j] + (k - 1);
+			const p = Math.round((s - k) * 100 / (s - k + 1));
+			result.push([
+				executable, "split-window",
+				"-t", `${winTarget}.${target}`,
+				"-v", "-p", String(p),
+				"-c", cwd,
+				colCmds[j][k],
+			]);
+		}
+	}
+
+	// Focus leader pane (top-left = pane 0)
+	result.push([executable, "select-pane", "-t", `${winTarget}.0`]);
+	return result;
+}
+
 export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: string, kind: "tmux" | "psmux"): string[][] {
 	const plan = buildTmuxLikePlan(loaded, kind === "psmux");
 	const size = tmuxLikeSessionSize(plan);
@@ -217,73 +295,11 @@ export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: s
 	}
 
 	for (const window of plan.teamWindows) {
-		const n = window.commands.length;
-		const winTarget = `${plan.sessionName}:${window.name}`;
-
 		// Always create window with leader (first command)
 		commands.push([executable, "new-window", "-t", plan.sessionName, "-n", window.name, "-c", window.cwd, window.commands[0]]);
-
-		if (n > 1) {
-			// Compute balanced column layout
-			const rowsMax = Math.ceil(Math.sqrt(n));
-			const cols    = Math.ceil(n / rowsMax);
-			const base    = Math.floor(n / cols);
-			const extra   = n % cols;
-			// leftmost (cols-extra) columns get base panes; rightmost extra columns get base+1
-			const colSizes = Array.from({ length: cols }, (_, i) => i < cols - extra ? base : base + 1);
-
-			// Assign commands to columns
-			let cmdOffset = 0;
-			const colCmds = colSizes.map(size => {
-				const slice = window.commands.slice(cmdOffset, cmdOffset + size);
-				cmdOffset += size;
-				return slice;
-			});
-
-			// offsets[j] = sum of colSizes[0..j-1] = pane index of col j's anchor during Phase 2.
-			// Each vertical split in column j inserts a pane after the current position, shifting
-			// all later panes up by 1 — so col j's anchor = total panes in columns 0..j-1.
-			let cumulative = 0;
-			const offsets = colSizes.map(s => { const o = cumulative; cumulative += s; return o; });
-
-			// Phase 1: horizontal splits to carve equal-width columns.
-			// H-splits append the new pane at the right without renumbering earlier panes,
-			// so after j H-splits the rightmost zone is pane j.
-			let rightmostZone = 0;
-			let remainingCols = cols;
-			for (let j = 1; j < cols; j++) {
-				const p = Math.round((remainingCols - 1) * 100 / remainingCols);
-				commands.push([
-					executable, "split-window",
-					"-t", `${winTarget}.${rightmostZone}`,
-					"-h", "-p", String(p),
-					"-c", window.cwd,
-					colCmds[j][0],
-				]);
-				rightmostZone = j; // H-splits don't renumber; new pane = j after j splits
-				remainingCols--;
-			}
-
-			// Phase 2: vertical fills.
-			// For column j, the anchor pane is offsets[j]. Each V-split on pane offsets[j]+(k-1)
-			// inserts the new pane at offsets[j]+k, which becomes the target for the next split.
-			for (let j = 0; j < cols; j++) {
-				const s = colSizes[j];
-				for (let k = 1; k < s; k++) {
-					const target = offsets[j] + (k - 1);
-					const p = Math.round((s - k) * 100 / (s - k + 1));
-					commands.push([
-						executable, "split-window",
-						"-t", `${winTarget}.${target}`,
-						"-v", "-p", String(p),
-						"-c", window.cwd,
-						colCmds[j][k],
-					]);
-				}
-			}
-
-			// Focus leader pane (top-left = pane 0)
-			commands.push([executable, "select-pane", "-t", `${winTarget}.0`]);
+		// Append split-window + select-pane commands from the shared helper
+		for (const cmd of buildColumnSplitCommands(executable, plan.sessionName, window.name, window.cwd, window.commands)) {
+			commands.push(cmd);
 		}
 	}
 
