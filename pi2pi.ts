@@ -77,6 +77,10 @@ export default function (pi: ExtensionAPI) {
 		description: "Optional human-friendly display name shown in broker UIs",
 		type: "string",
 	});
+	pi.registerFlag("room-display-names", {
+		description: "Optional per-room display names, e.g. team=Alice,leadership=blackbird team",
+		type: "string",
+	});
 	pi.registerFlag("agent-role", {
 		description: "Optional role label shown in broker UIs and room membership summaries",
 		type: "string",
@@ -100,6 +104,7 @@ export default function (pi: ExtensionAPI) {
 	let defaultRoomAlias: string | null = null;
 	let displayName: string | null = null;
 	let agentRole: string | null = null;
+	const roomDisplayNames = new Map<string, string>();
 	let shutdownRequested = false;
 
 	const roomConnections = new Map<string, RoomConnection>();
@@ -220,6 +225,32 @@ export default function (pi: ExtensionAPI) {
 			});
 		}
 		defaultRoomAlias = defaultAlias;
+	}
+
+	function configureRoomDisplayNames(bindings: Array<{ alias: string; room: string }>) {
+		roomDisplayNames.clear();
+		const raw = (pi.getFlag("room-display-names") as string | undefined)?.trim();
+		if (!raw) return;
+
+		for (const item of raw.split(",").map(part => part.trim()).filter(Boolean)) {
+			const eq = item.indexOf("=");
+			if (eq === -1) throw new Error(`Pi2Pi: invalid room display name binding "${item}"`);
+			const target = item.slice(0, eq).trim();
+			const value = item.slice(eq + 1).trim();
+			if (!target || !value) throw new Error(`Pi2Pi: invalid room display name binding "${item}"`);
+			const binding = bindings.find(candidate => candidate.alias === target || candidate.room === target);
+			if (!binding) throw new Error(`Pi2Pi: room display name target "${target}" is not one of the configured room bindings`);
+			roomDisplayNames.set(binding.alias, value);
+		}
+	}
+
+	function displayNameForConnection(connection: RoomConnection): string {
+		return roomDisplayNames.get(connection.alias) ?? displayName ?? agentName ?? connection.alias;
+	}
+
+	function friendlyName(connection: RoomConnection, name: string): string {
+		if (name === "everyone") return name;
+		return connection.roster.find(member => member.name === name)?.displayName ?? name;
 	}
 
 	function formatMember(member: RoomMember): string {
@@ -356,12 +387,13 @@ export default function (pi: ExtensionAPI) {
 
 			case "incoming": {
 				if (!id || !from || content === undefined) return;
+				const fromDisplay = friendlyName(connection, from);
 				incomingQueue.set(id, { id, from, roomAlias });
 				pi.sendMessage({
 					customType: "pi2pi-incoming",
-					content: `Message from ${from} in ${roomLabel(connection)} [id: ${id}]: ${content}\n\nUse the reply tool with id=\"${id}\" to send your response.`,
+					content: `Message from ${fromDisplay} in ${roomLabel(connection)} [id: ${id}]: ${content}\n\nUse the reply tool with id=\"${id}\" to send your response.`,
 					display: true,
-					details: { from, message: content, roomLabel: roomLabel(connection) },
+					details: { from: fromDisplay, message: content, roomLabel: roomLabel(connection) },
 				}, { triggerTurn: true, deliverAs: "followUp" });
 				break;
 			}
@@ -389,11 +421,12 @@ export default function (pi: ExtensionAPI) {
 					waiter();
 				} else if (!agentTurnActive) {
 					entry.claimed = true;
+					const fromDisplay = friendlyName(connection, from);
 					pi.sendMessage({
 						customType: "pi2pi-reply",
-						content: `[Incoming message received from ${from} in ${roomLabel(connection)}, id: ${id}]\n${from}: ${content}`,
+						content: `[Incoming message received from ${fromDisplay} in ${roomLabel(connection)}, id: ${id}]\n${fromDisplay}: ${content}`,
 						display: true,
-						details: { from, full: content, roomLabel: roomLabel(connection) },
+						details: { from: fromDisplay, full: content, roomLabel: roomLabel(connection) },
 					}, { triggerTurn: true, deliverAs: "followUp" });
 				} else {
 					replyBuffer.set(id, entry);
@@ -446,7 +479,7 @@ export default function (pi: ExtensionAPI) {
 		connection.ws = ws;
 		ws.addEventListener("open", () => {
 			connection.reconnectAttempts = 0;
-			ws.send(JSON.stringify({ type: "register", name: agentName, room: connection.room, displayName, role: agentRole }));
+			ws.send(JSON.stringify({ type: "register", name: agentName, room: connection.room, displayName: displayNameForConnection(connection), role: agentRole }));
 		});
 		ws.addEventListener("message", event => {
 			handleBrokerMessage(connection.alias, String((event as { data?: unknown }).data));
@@ -622,6 +655,7 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const parsed = parseRoomBindings();
 			configureRooms(parsed.bindings, parsed.defaultAlias);
+			configureRoomDisplayNames(parsed.bindings);
 		} catch (error) {
 			ctx.ui.setStatus("pi2pi", `✖ ${error instanceof Error ? error.message : String(error)}`);
 			return;
@@ -643,6 +677,7 @@ export default function (pi: ExtensionAPI) {
 		agentName = null;
 		displayName = null;
 		agentRole = null;
+		roomDisplayNames.clear();
 		defaultRoomAlias = null;
 		incomingQueue.clear();
 		pendingOutgoing.clear();
@@ -687,11 +722,12 @@ export default function (pi: ExtensionAPI) {
 			replyBuffer.delete(id);
 			if (entry.claimed) continue;
 			const connection = roomConnections.get(entry.roomAlias);
+			const fromDisplay = connection ? friendlyName(connection, entry.from) : entry.from;
 			pi.sendMessage({
 				customType: "pi2pi-reply",
-				content: `[Incoming message received from ${entry.from} in ${connection ? roomLabel(connection) : entry.roomAlias}, id: ${entry.id}]\n${entry.from}: ${entry.content}`,
+				content: `[Incoming message received from ${fromDisplay} in ${connection ? roomLabel(connection) : entry.roomAlias}, id: ${entry.id}]\n${fromDisplay}: ${entry.content}`,
 				display: true,
-				details: { from: entry.from, full: entry.content, roomLabel: connection ? roomLabel(connection) : entry.roomAlias },
+				details: { from: fromDisplay, full: entry.content, roomLabel: connection ? roomLabel(connection) : entry.roomAlias },
 			}, { triggerTurn: true, deliverAs: "followUp" });
 		}
 	});
@@ -852,10 +888,11 @@ export default function (pi: ExtensionAPI) {
 			const entry = replyBuffer.get(params.id);
 			if (!entry) throw new Error(`No reply available for id ${params.id} — has it arrived yet? Use the wait tool first.`);
 			entry.claimed = true;
-			if (toolCallId) readReplyMeta.set(toolCallId, { from: entry.from, roomAlias: entry.roomAlias });
 			const connection = roomConnections.get(entry.roomAlias);
+			const fromDisplay = connection ? friendlyName(connection, entry.from) : entry.from;
+			if (toolCallId) readReplyMeta.set(toolCallId, { from: fromDisplay, roomAlias: entry.roomAlias });
 			return {
-				content: [{ type: "text", text: `[Incoming message received from ${entry.from} in ${connection ? roomLabel(connection) : entry.roomAlias}, id: ${entry.id}]\n${entry.from}: ${entry.content}` }],
+				content: [{ type: "text", text: `[Incoming message received from ${fromDisplay} in ${connection ? roomLabel(connection) : entry.roomAlias}, id: ${entry.id}]\n${fromDisplay}: ${entry.content}` }],
 			};
 		},
 	});

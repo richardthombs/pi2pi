@@ -77,8 +77,9 @@ class FakeWebSocket {
 	}
 }
 
-// Track the most recently created FakeWebSocket so tests can access it.
+// Track created FakeWebSockets so tests can access them.
 let latestFakeWs: FakeWebSocket;
+let fakeWss: FakeWebSocket[] = [];
 const OrigWebSocket = (globalThis as unknown as { WebSocket: unknown }).WebSocket;
 
 // ── MockPi ────────────────────────────────────────────────────────────────────
@@ -180,6 +181,7 @@ beforeAll(async () => {
 		constructor(_url: string) {
 			const instance = new FakeWebSocket();
 			latestFakeWs = instance;
+			fakeWss.push(instance);
 			return instance;
 		}
 		static OPEN = 1;
@@ -201,7 +203,10 @@ afterAll(() => {
 interface BootOptions {
 	name?: string;
 	room?: string;
+	rooms?: Array<{ alias: string; room: string; peers?: string[] }>;
 	peers?: string[];
+	displayName?: string;
+	roomDisplayNames?: string;
 }
 
 /**
@@ -209,13 +214,21 @@ interface BootOptions {
  * and simulates the broker completing registration.  Returns the MockPi and
  * the FakeWebSocket the extension is connected to.
  */
-async function boot(opts: BootOptions = {}): Promise<{ pi: MockPi; ws: FakeWebSocket }> {
+async function boot(opts: BootOptions = {}): Promise<{ pi: MockPi; ws: FakeWebSocket; wss: FakeWebSocket[] }> {
 	const name = opts.name ?? "TestAgent";
 	const room = opts.room ?? "test-room";
+	const rooms = opts.rooms ?? [{ alias: room, room, peers: opts.peers }];
+	fakeWss = [];
 
 	const pi = new MockPi();
 	pi.setFlag("agent-name", name);
-	pi.setFlag("room", room);
+	if (opts.rooms) {
+		pi.setFlag("rooms", rooms.map(binding => `${binding.alias}=${binding.room}`).join(","));
+	} else {
+		pi.setFlag("room", room);
+	}
+	if (opts.displayName) pi.setFlag("display-name", opts.displayName);
+	if (opts.roomDisplayNames) pi.setFlag("room-display-names", opts.roomDisplayNames);
 	pi.setFlag("broker", "ws://fake-broker");
 
 	// Register all tools, handlers, message renderers.
@@ -229,16 +242,40 @@ async function boot(opts: BootOptions = {}): Promise<{ pi: MockPi; ws: FakeWebSo
 	expect(ws).toBeDefined();
 
 	// Trigger WS open → extension sends { type: "register", ... }
-	ws.triggerOpen();
+	for (const socket of fakeWss) socket.triggerOpen();
 	await Bun.sleep(0); // flush microtasks
 
 	// Simulate broker acknowledging registration + sending initial agent list.
-	ws.receive({ type: "registered", name, room });
-	ws.receive({ type: "agent_list", agents: [name, ...(opts.peers ?? [])], room });
+	for (let i = 0; i < rooms.length; i++) {
+		const binding = rooms[i];
+		const socket = fakeWss[i];
+		socket.receive({ type: "registered", name, room: binding.room });
+		socket.receive({ type: "agent_list", agents: [name, ...(binding.peers ?? [])], room: binding.room });
+	}
 	await Bun.sleep(10); // let message handlers run
 
-	return { pi, ws };
+	return { pi, ws, wss: fakeWss };
 }
+
+describe("room-specific display names", () => {
+	test("registers the leadership connection with the team display name", async () => {
+		const { wss } = await boot({
+			name: "blackbird.lead",
+			displayName: "Alice",
+			roomDisplayNames: "team=Alice,leadership=blackbird team",
+			rooms: [
+				{ alias: "team", room: "blackbird" },
+				{ alias: "leadership", room: "leadership" },
+			],
+		});
+
+		expect(wss).toHaveLength(2);
+		const teamRegister = wss[0].sentOfType("register")[0];
+		const leadershipRegister = wss[1].sentOfType("register")[0];
+		expect(teamRegister.displayName).toBe("Alice");
+		expect(leadershipRegister.displayName).toBe("blackbird team");
+	});
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATH 1: wait → read_reply

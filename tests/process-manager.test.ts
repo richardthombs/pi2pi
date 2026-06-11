@@ -54,6 +54,8 @@ describe("process-manager", () => {
 		expect(leader?.args).toContain("Alice (manager) — engineering");
 		expect(leader?.args).toContain("--display-name");
 		expect(leader?.args).toContain("Alice");
+		expect(leader?.args).toContain("--room-display-names");
+		expect(leader?.args).toContain("team=Alice,leadership=engineering team");
 		expect(leader?.args).toContain("--rooms");
 		expect(leader?.args).toContain("team=engineering,leadership=leadership");
 		expect(leader?.cwd).toBe(join(root, ".pi", "workspaces", "engineering", "pi2pi"));
@@ -87,6 +89,8 @@ describe("process-manager", () => {
 		const prompt = args[args.indexOf("--append-system-prompt") + 1];
 		expect(prompt).toContain("You are overlord, the interactive overlord coordinating team leaders.");
 		expect(prompt).toContain("leadership=#leadership");
+		expect(prompt).toContain("Each non-overlord agent in the leadership room is the team leader for exactly one team");
+		expect(prompt).toContain("'ask the blackbird team to ...'");
 	});
 
 	test("overlord prompt can be configured from orchestration settings", () => {

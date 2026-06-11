@@ -109,6 +109,10 @@ function agentSessionName(memberName: string, roleName: string, workspaceName: s
 	return `${memberName} (${roleName}) — ${workspaceName}`;
 }
 
+function leadershipDisplayName(workspaceName: string): string {
+	return `${workspaceName} team`;
+}
+
 function roomBindingsForMember(loaded: LoadedConfig, workspaceName: string, workspace: WorkspaceDefinition, member: MemberDefinition): RoomBinding[] {
 	const bindings: RoomBinding[] = [{ alias: "team", room: workspaceRoomName(workspaceName, workspace) }];
 	if (workspace.leader === member.name) {
@@ -156,6 +160,7 @@ function buildPrompt(
 		systemPrompt += `\n\nYou are the leader of the ${workspaceName} team.` +
 			` Your agent handle is ${handle}.` +
 			` You are connected to rooms ${bindingSummary}.` +
+			` In the leadership room you appear as "${leadershipDisplayName(workspaceName)}" because you represent the whole team there.` +
 			` Receive top-level work in the leadership room, delegate into the team room, and return final synthesised results back upward.` +
 			` Your mixed-specialty team members are: ${teamRoster}.`;
 	} else {
@@ -193,6 +198,7 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 		const model = member.model ?? role.model;
 		const sessionDir = agentSessionDir(loaded, workspaceName, member.name);
 		const sessionName = agentSessionName(member.name, member.role, workspaceName);
+		const roomDisplayNames = isLeader ? `team=${member.name},leadership=${leadershipDisplayName(workspaceName)}` : null;
 		const args: string[] = [
 			"pi",
 			"-c",
@@ -202,6 +208,7 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 			"--agent-name", handle,
 			"--display-name", member.name,
 			"--agent-role", member.role,
+			...(roomDisplayNames ? ["--room-display-names", roomDisplayNames] : []),
 			"--rooms", roomBindingArg,
 			"--default-room", "team",
 			"--model", model,
