@@ -114,9 +114,21 @@ describe("pit init", () => {
 		// Config should have absolute paths pointing into fakeHome/.pit/
 		const cfg = parse(readFileSync(configFile, "utf8")) as Record<string, unknown>;
 		const state = cfg.state as Record<string, string>;
+		const roles = cfg.roles as Record<string, Record<string, unknown>>;
 		expect(state.reposRoot).toBe(join(pitDir, "repos"));
 		expect(state.workspacesRoot).toBe(join(pitDir, "workspaces"));
 		expect(state.runtimeRoot).toBe(join(pitDir, "runtime"));
+		expect(Object.keys(roles).sort()).toEqual([
+			"architect",
+			"critic",
+			"dev",
+			"leader",
+			"product",
+			"qa",
+			"ux",
+		]);
+		expect(roles["leader"].title).toBe("Team Leader");
+		expect(roles["dev"].tools).toBe("all");
 
 		rmSync(fakeHome, { recursive: true, force: true });
 	});

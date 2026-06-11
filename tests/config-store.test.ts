@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { deriveRepoName, loadConfig, saveConfig } from "../config-store";
+import { builtInDefaultRoles, deriveRepoName, loadConfig, saveConfig } from "../config-store";
 
 describe("config-store", () => {
 	test("deriveRepoName strips .git and normalizes separators", () => {
@@ -20,6 +20,18 @@ describe("config-store", () => {
 		expect(loaded.config.orchestration.sessionName).toBe("pi2pi");
 		expect(loaded.config.repositories).toEqual({});
 		expect(loaded.config.workspaces).toEqual({});
+	});
+
+	test("builtInDefaultRoles loads the shipped prompt set with concise role keys", () => {
+		const roles = builtInDefaultRoles();
+		expect(roles["leader"].title).toBe("Team Leader");
+		expect(roles["leader"].tools).toBe("all");
+		expect(roles["dev"].title).toBe("Software Engineer");
+		expect(roles["architect"].title).toBe("Architect");
+		expect(roles["qa"].title).toBe("Quality Assurance");
+		expect(roles["ux"].title).toBe("User Experience");
+		expect(roles["product"].title).toBe("Product Manager");
+		expect(roles["critic"].systemPrompt).toContain("constructive");
 	});
 
 	test("saveConfig persists shared roles and workspaces", () => {

@@ -14,6 +14,48 @@ const DEFAULT_OVERLORD_PROMPT = [
 	"Send top-level tasks to the appropriate team leader, wait for their synthesised result, and coordinate across teams.",
 ].join(" ");
 
+const DEFAULT_ROLE_MODEL = "github-copilot/claude-sonnet-4.6";
+const DEFAULT_ROLE_KEY_MAP: Record<string, string> = {
+	"team-leader": "leader",
+	"software-engineer": "dev",
+	architect: "architect",
+	"quality-assurance": "qa",
+	"user-experience": "ux",
+	"product-manager": "product",
+	critic: "critic",
+};
+
+const DEFAULT_ROLE_METADATA: Record<string, { title: string; description: string }> = {
+	leader: {
+		title: "Team Leader",
+		description: "Coordinates the team, delegates work, and synthesizes outcomes.",
+	},
+	dev: {
+		title: "Software Engineer",
+		description: "Implements and debugs software changes.",
+	},
+	architect: {
+		title: "Architect",
+		description: "Shapes design upfront and reviews engineering changes.",
+	},
+	qa: {
+		title: "Quality Assurance",
+		description: "Verifies behavior, risk, and delivery confidence.",
+	},
+	ux: {
+		title: "User Experience",
+		description: "Improves flows, usability, and interaction quality.",
+	},
+	product: {
+		title: "Product Manager",
+		description: "Clarifies scope, priorities, and product tradeoffs.",
+	},
+	critic: {
+		title: "Critic",
+		description: "Challenges weak reasoning, risks, and unsupported conclusions.",
+	},
+};
+
 export interface RoleDefinition {
 	title: string;
 	description?: string;
@@ -97,6 +139,27 @@ function resolveDefaultConfigPath(): string {
 function deriveProjectRoot(configDir: string): string {
 	const base = basename(configDir).toLowerCase();
 	return (base === ".pi" || base === ".pit") ? dirname(configDir) : configDir;
+}
+
+export function builtInDefaultRoles(model = DEFAULT_ROLE_MODEL): Record<string, RoleDefinition> {
+	const promptsPath = join(import.meta.dir, "default-role-prompts.yaml");
+	const parsed = parse(readFileSync(promptsPath, "utf8")) as { roles?: Record<string, string> } | null;
+	const promptRoles = parsed?.roles ?? {};
+	const roles: Record<string, RoleDefinition> = {};
+
+	for (const [promptKey, prompt] of Object.entries(promptRoles)) {
+		const key = DEFAULT_ROLE_KEY_MAP[promptKey] ?? promptKey;
+		const meta = DEFAULT_ROLE_METADATA[key] ?? { title: key, description: undefined as string | undefined };
+		roles[key] = {
+			title: meta.title,
+			description: meta.description,
+			model,
+			systemPrompt: prompt,
+			tools: "all",
+		};
+	}
+
+	return roles;
 }
 
 export function defaultConfig(): Pi2PiConfig {

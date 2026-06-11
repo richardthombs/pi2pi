@@ -4,6 +4,7 @@ import { join } from "path";
 import { stringify } from "yaml";
 import {
 	assertSimpleKey,
+	builtInDefaultRoles,
 	defaultConfig,
 	deriveRepoName,
 	ensureStateDirectories,
@@ -96,6 +97,7 @@ function handleInit(): void {
 		initial.state.reposRoot      = reposRoot;
 		initial.state.workspacesRoot = workspacesRoot;
 		initial.state.runtimeRoot    = runtimeRoot;
+		initial.roles = builtInDefaultRoles();
 		writeFileSync(configFile, stringify(initial), "utf8");
 		console.log(`Initialised pit at ${homeDir}`);
 	} else {
