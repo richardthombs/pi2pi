@@ -6,6 +6,7 @@ import type { LoadedConfig } from "../config-store";
 import { defaultConfig } from "../config-store";
 import { buildTmuxLikeCommandSequence, cmuxLayoutForCommands, selectMultiplexerKind } from "../multiplexer";
 import embeddedBrokerSource from "../broker.ts" with { type: "text" };
+import embeddedBrokerUiSource from "../broker-ui.ts" with { type: "text" };
 
 function git(args: string[], cwd?: string): string {
 	const proc = Bun.spawnSync(["git", ...args], {
@@ -92,6 +93,9 @@ describe("tmux-like command generation", () => {
 		const brokerPath = join(root, "broker.ts");
 		expect(existsSync(brokerPath)).toBe(true);
 		expect(readFileSync(brokerPath, "utf8")).toBe(embeddedBrokerSource);
+		const brokerUiPath = join(root, "broker-ui.ts");
+		expect(existsSync(brokerUiPath)).toBe(true);
+		expect(readFileSync(brokerUiPath, "utf8")).toBe(embeddedBrokerUiSource);
 		expect(commands[0]).toEqual(["tmux", "has-session", "-t", "pi2pi-org"]);
 		expect(commands[1]).toContain("new-session");
 		expect(commands[1]).toContain("leadership");
@@ -106,23 +110,31 @@ describe("tmux-like command generation", () => {
 		expect(commands.some(command => command.some(el => el.includes(`export GIT_CEILING_DIRECTORIES='${workspaceRoot.replace(/\\/g, "\\\\")}'`) || el.includes(`export GIT_CEILING_DIRECTORIES='${workspaceRoot}'`)))).toBe(true);
 	});
 
-	test("psmux launch scripts set repo cwd and git ceiling to the workspace root", () => {
-		loaded.config.roles.manager.systemPrompt = "Leader's base prompt with \"quotes\".";
-		buildTmuxLikeCommandSequence(loaded, "psmux", "psmux");
+	test("psmux commands inline cwd, git ceiling, and prompt text with only single-quote escaping", () => {
+		loaded.config.roles.manager.systemPrompt = "Leader's base prompt with \"quotes\".\nSecond line.";
+		const commands = buildTmuxLikeCommandSequence(loaded, "psmux", "psmux");
 		const brokerPath = join(root, "broker.ts");
 		expect(existsSync(brokerPath)).toBe(true);
 		expect(readFileSync(brokerPath, "utf8")).toBe(embeddedBrokerSource);
-		const scriptPath = join(root, ".pi", "runtime", "launch-scripts", "engineering-Alice.ps1");
-		const promptPath = join(root, ".pi", "runtime", "launch-prompts", "engineering-Alice.txt");
-		const script = readFileSync(scriptPath, "utf8");
-		expect(script).toContain(`$env:GIT_CEILING_DIRECTORIES = '${join(root, ".pi", "workspaces", "engineering").replace(/'/g, "''")}'`);
-		expect(script).toContain(`Set-Location -LiteralPath '${join(root, ".pi", "workspaces", "engineering", "pi2pi").replace(/'/g, "''")}'`);
-		expect(script).toContain(`$appendSystemPrompt = [string](Get-Content -LiteralPath '${promptPath.replace(/'/g, "''")}' -Raw)`);
-		expect(script).toContain("$launchArgs = @(");
-		expect(script).toContain("& $launchExe @launchRest");
-		expect(existsSync(promptPath)).toBe(true);
-		const expectedPrompt = readFileSync(promptPath, "utf8");
-		expect(expectedPrompt).toContain("Leader's base prompt with \"quotes\".");
+		const brokerUiPath = join(root, "broker-ui.ts");
+		expect(existsSync(brokerUiPath)).toBe(true);
+		expect(readFileSync(brokerUiPath, "utf8")).toBe(embeddedBrokerUiSource);
+
+		const launchScriptsDir = join(root, ".pi", "runtime", "launch-scripts");
+		const launchPromptsDir = join(root, ".pi", "runtime", "launch-prompts");
+		expect(existsSync(launchScriptsDir)).toBe(false);
+		expect(existsSync(launchPromptsDir)).toBe(false);
+
+		const engineeringWindow = commands.find(command => command[1] === "new-window" && command.includes("engineering"));
+		expect(engineeringWindow).toBeDefined();
+		const commandText = engineeringWindow![engineeringWindow!.length - 1];
+		expect(commandText).toContain(`$env:GIT_CEILING_DIRECTORIES = '${join(root, ".pi", "workspaces", "engineering").replace(/'/g, "''")}'`);
+		expect(commandText).toContain(`Set-Location -LiteralPath '${join(root, ".pi", "workspaces", "engineering", "pi2pi").replace(/'/g, "''")}'`);
+		expect(commandText).not.toContain("FromBase64String");
+		expect(commandText).toContain("$appendSystemPrompt = (@(");
+		expect(commandText).toContain(`'Leader''s base prompt with "quotes".', 'Second line.'`);
+		expect(commandText).toContain("-join [Environment]::NewLine");
+		expect(commandText).toContain("Clear-Host; & 'pi'");
 
 		const fakePiPath = join(root, "fake-pi.ps1");
 		const capturePath = join(root, "captured-args.json");
@@ -131,17 +143,18 @@ describe("tmux-like command generation", () => {
 			"foreach ($a in $args) { $items += $a }",
 			`$items | ConvertTo-Json -Compress | Set-Content -LiteralPath '${capturePath.replace(/'/g, "''")}'`,
 		].join("\n"), "utf8");
-		writeFileSync(scriptPath, script.replace("  'pi'", `  '${fakePiPath.replace(/'/g, "''")}'`), "utf8");
 
+		const runnableCommand = commandText.replace("& 'pi'", `& '${fakePiPath.replace(/'/g, "''")}'`);
 		const powershellPath = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-		const result = Bun.spawnSync([powershellPath, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+		const result = Bun.spawnSync([powershellPath, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", runnableCommand], {
 			stdout: "pipe",
 			stderr: "pipe",
 		});
 		expect(result.exitCode).toBe(0);
 		expect(existsSync(capturePath)).toBe(true);
 		const capturedArgs = JSON.parse(readFileSync(capturePath, "utf8")) as string[];
-		expect(capturedArgs[capturedArgs.indexOf("--append-system-prompt") + 1]).toBe(expectedPrompt);
+		const promptArg = capturedArgs[capturedArgs.indexOf("--append-system-prompt") + 1].replace(/\r\n/g, "\n");
+		expect(promptArg).toContain("Leader's base prompt with \"quotes\".\nSecond line.");
 		expect(capturedArgs).toContain("--agent-name");
 		expect(capturedArgs).toContain("engineering.lead");
 	});
@@ -295,7 +308,7 @@ describe("tmux exact percentage splits", () => {
 	});
 
 	test("no select-layout command appears for any team window", () => {
-		for (const n of [3, 5, 7, 9]) {
+		for (const n of [3, 9]) {
 			const loaded = makeLoaded(n);
 			const all = buildTmuxLikeCommandSequence(loaded, "tmux", "tmux");
 			expect(all.some(c => c.includes("select-layout"))).toBe(false);

@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import embeddedBrokerSource from "./broker.ts" with { type: "text" };
+import embeddedBrokerUiSource from "./broker-ui.ts" with { type: "text" };
 import type { LoadedConfig } from "./config-store";
-import { ensureStateDirectories, orchestrationSessionName } from "./config-store";
+import { orchestrationSessionName } from "./config-store";
 import { buildOverlordArgs, createWorkspaceLaunchSpecs } from "./process-manager";
 import { ensureWorkspaceLayout } from "./workspace-manager";
 
@@ -44,6 +45,13 @@ function shellEsc(arg: string): string {
 
 function psEsc(arg: string): string {
 	return `'${arg.replace(/'/g, "''")}'`;
+}
+
+function psMultilineLiteral(text: string): string {
+	if (!text.includes("\n") && !text.includes("\r")) return psEsc(text);
+	const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+	const lines = normalized.split("\n").map(psEsc);
+	return `(@(${lines.join(", ")}) -join [Environment]::NewLine)`;
 }
 
 function findExecutable(name: string): string | null {
@@ -146,41 +154,22 @@ function buildLaunchCommand(
 		return steps.join(" && ");
 	}
 
-	const { runtimeRoot } = ensureStateDirectories(loaded);
-	const scriptsDir = join(runtimeRoot, "launch-scripts");
-	const promptsDir = join(runtimeRoot, "launch-prompts");
-	mkdirSync(scriptsDir, { recursive: true });
-	mkdirSync(promptsDir, { recursive: true });
-	const scriptPath = join(scriptsDir, `${key}.ps1`);
 	const appendPromptIndex = args.indexOf("--append-system-prompt");
-	let promptLoaderLines: string[] = [];
-	let argEntries = args.map(psEsc);
-	if (appendPromptIndex !== -1 && appendPromptIndex + 1 < args.length) {
-		const promptPath = join(promptsDir, `${key}.txt`);
-		writeFileSync(promptPath, args[appendPromptIndex + 1], "utf8");
-		promptLoaderLines = [`$appendSystemPrompt = [string](Get-Content -LiteralPath ${psEsc(promptPath)} -Raw)`];
-		argEntries = args.map((arg, index) => index === appendPromptIndex + 1 ? "$appendSystemPrompt" : psEsc(arg));
-	}
-	const script = [
+	const commandEntries = args.map(psEsc);
+	if (commandEntries.length > 0) commandEntries[0] = `& ${commandEntries[0]}`;
+	const setupLines = [
 		"$ErrorActionPreference = 'Stop'",
 		...(gitCeilingDir ? [`$env:GIT_CEILING_DIRECTORIES = ${psEsc(gitCeilingDir)}`] : []),
 		...(cwd ? [`Set-Location -LiteralPath ${psEsc(cwd)}`] : []),
-		...promptLoaderLines,
-		"$launchArgs = @(",
-		...argEntries.map(entry => `  ${entry}`),
-		")",
-		"$launchExe = $launchArgs[0]",
-		"$launchRest = @()",
-		"if ($launchArgs.Length -gt 1) { $launchRest = $launchArgs[1..($launchArgs.Length - 1)] }",
-		"Clear-Host",
-		"& $launchExe @launchRest",
-	].join("\n") + "\n";
-	writeFileSync(scriptPath, script, "utf8");
-
-	const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
-	const powershellPath = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-	const powershellExe = existsSync(powershellPath) ? powershellPath : "powershell";
-	return `& ${psEsc(powershellExe)} -NoExit -NoProfile -ExecutionPolicy Bypass -File ${psEsc(scriptPath)}`;
+	];
+	if (appendPromptIndex !== -1 && appendPromptIndex + 1 < args.length) {
+		setupLines.push(`$appendSystemPrompt = ${psMultilineLiteral(args[appendPromptIndex + 1])}`);
+		commandEntries[appendPromptIndex + 1] = "$appendSystemPrompt";
+	}
+	setupLines.push("Clear-Host");
+	setupLines.push(commandEntries.join(" "));
+	
+	return setupLines.join("; ");
 }
 
 function normalizePaneCommands(commands: Array<PaneLaunchCommand | string>, defaultCwd = "."): PaneLaunchCommand[] {
@@ -189,10 +178,15 @@ function normalizePaneCommands(commands: Array<PaneLaunchCommand | string>, defa
 
 export function ensureBrokerEntrypoint(loaded: LoadedConfig): string {
 	const brokerPath = join(loaded.configDir, "broker.ts");
+	const brokerUiPath = join(loaded.configDir, "broker-ui.ts");
 	mkdirSync(loaded.configDir, { recursive: true });
-	const current = existsSync(brokerPath) ? readFileSync(brokerPath, "utf8") : null;
-	if (current !== embeddedBrokerSource) {
+	const currentBroker = existsSync(brokerPath) ? readFileSync(brokerPath, "utf8") : null;
+	if (currentBroker !== embeddedBrokerSource) {
 		writeFileSync(brokerPath, embeddedBrokerSource, "utf8");
+	}
+	const currentBrokerUi = existsSync(brokerUiPath) ? readFileSync(brokerUiPath, "utf8") : null;
+	if (currentBrokerUi !== embeddedBrokerUiSource) {
+		writeFileSync(brokerUiPath, embeddedBrokerUiSource, "utf8");
 	}
 	return brokerPath;
 }
