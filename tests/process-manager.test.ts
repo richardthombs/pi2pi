@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import type { LoadedConfig } from "../config-store";
 import { defaultConfig } from "../config-store";
 import { buildOverlordArgs, createWorkspaceLaunchSpecs } from "../process-manager";
+import embeddedPi2PiExtensionSource from "../pi2pi.ts" with { type: "text" };
 
 describe("process-manager", () => {
 	test("leader joins both leadership and team rooms while teammates join only the team room", () => {
@@ -40,6 +41,9 @@ describe("process-manager", () => {
 
 		const specs = createWorkspaceLaunchSpecs(loaded, "engineering");
 		expect(specs).toHaveLength(2);
+		const extensionPath = join(root, "pi2pi.ts");
+		expect(existsSync(extensionPath)).toBe(true);
+		expect(readFileSync(extensionPath, "utf8")).toBe(embeddedPi2PiExtensionSource);
 
 		const leader = specs.find(spec => spec.memberName === "Alice");
 		const engineer = specs.find(spec => spec.memberName === "Bob");
@@ -49,6 +53,8 @@ describe("process-manager", () => {
 			{ alias: "leadership", room: "leadership" },
 		]);
 		expect(leader?.args).toContain("-c");
+		expect(leader?.args).toContain("-e");
+		expect(leader?.args).toContain(extensionPath);
 		expect(leader?.args).toContain("--session-dir");
 		expect(leader?.args).toContain("--name");
 		expect(leader?.args).toContain("Alice (manager) — engineering");
@@ -78,7 +84,12 @@ describe("process-manager", () => {
 		loaded.config.orchestration.leadershipRoom = "leadership";
 		loaded.config.orchestration.overlordName = "overlord";
 		const args = buildOverlordArgs(loaded);
+		const extensionPath = join(root, "pi2pi.ts");
+		expect(existsSync(extensionPath)).toBe(true);
+		expect(readFileSync(extensionPath, "utf8")).toBe(embeddedPi2PiExtensionSource);
 		expect(args).toContain("-c");
+		expect(args).toContain("-e");
+		expect(args).toContain(extensionPath);
 		expect(args).toContain("--session-dir");
 		expect(args).toContain("--name");
 		expect(args).toContain("overlord (overlord)");

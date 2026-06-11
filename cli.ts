@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
-import { stringify } from "yaml";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "fs";
+import { dirname, join, resolve } from "path";
+
 import {
 	assertSimpleKey,
 	builtInDefaultRoles,
@@ -13,12 +13,12 @@ import {
 	loadConfig,
 	orchestrationSessionName,
 	overlordName,
-	pitHomeDir,
 	saveConfig,
+	stringifyConfig,
 	type LoadedConfig,
 } from "./config-store";
-import { buildOverlordArgs, getWorkspaceProcessStatus } from "./process-manager";
-import { attachOrchestration, orchestrationStatus, startOrchestration, stopOrchestration } from "./multiplexer";
+import { buildOverlordArgs, ensurePi2PiExtension, getWorkspaceProcessStatus } from "./process-manager";
+import { attachOrchestration, ensureBrokerEntrypoint, orchestrationStatus, startOrchestration, stopOrchestration } from "./multiplexer";
 import { ensureWorkspaceLayout } from "./workspace-manager";
 
 interface ParsedCli {
@@ -73,13 +73,18 @@ function usage(): never {
 
 Optional:
   --config <path>   Use a different config file
+                    (for 'pit init', pass either a config file path or a config directory)
                     (default: .pi/config.yaml if present, else ~/.pit/config.yaml)`);
 	process.exit(1);
 }
 
-function handleInit(): void {
-	const homeDir = pitHomeDir();
-	const configFile = globalConfigPath();
+function handleInit(configPath?: string): void {
+	const resolvedConfig = resolve(configPath ?? globalConfigPath());
+	const configIsDirectory = configPath
+		? (existsSync(resolvedConfig) && statSync(resolvedConfig).isDirectory()) || !/\.ya?ml$/i.test(resolvedConfig)
+		: false;
+	const homeDir = configIsDirectory ? resolvedConfig : dirname(resolvedConfig);
+	const configFile = configIsDirectory ? join(homeDir, "config.yaml") : resolvedConfig;
 	const reposRoot      = join(homeDir, "repos");
 	const workspacesRoot = join(homeDir, "workspaces");
 	const runtimeRoot    = join(homeDir, "runtime");
@@ -98,7 +103,7 @@ function handleInit(): void {
 		initial.state.workspacesRoot = workspacesRoot;
 		initial.state.runtimeRoot    = runtimeRoot;
 		initial.roles = builtInDefaultRoles();
-		writeFileSync(configFile, stringify(initial), "utf8");
+		writeFileSync(configFile, stringifyConfig(initial), "utf8");
 		console.log(`Initialised pit at ${homeDir}`);
 	} else {
 		console.log(`pit already initialised at ${homeDir} (config unchanged)`);
@@ -191,6 +196,9 @@ function handleOrchestration(loaded: LoadedConfig, args: string[]): void {
 		console.log(`Leadership room: ${leadershipRoomName(loaded.config)}`);
 		console.log(`Overlord name: ${overlordName(loaded.config)}`);
 		console.log(`Session name: ${orchestrationSessionName(loaded.config)}`);
+		console.log(`Config directory: ${loaded.configDir}`);
+		console.log(`Pi2Pi extension: ${ensurePi2PiExtension(loaded)}`);
+		console.log(`Broker script: ${ensureBrokerEntrypoint(loaded)}`);
 		return;
 	}
 
@@ -378,7 +386,7 @@ try {
 	const [entity, ...args] = parsed.args;
 
 	if (entity === "init") {
-		handleInit();
+		handleInit(parsed.configPath);
 	} else {
 		const loaded = loadConfig(parsed.configPath);
 		_dispatchCommand(entity, loaded, args);

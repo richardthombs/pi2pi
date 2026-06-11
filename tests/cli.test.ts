@@ -55,4 +55,18 @@ describe("cli", () => {
 		expect(saved).toContain("leader: Alice");
 		expect(saved).toContain("Alice");
 	});
+
+	test("orchestration show prints resolved extension and broker script paths", () => {
+		const cwd = tmpRoot();
+		const configPath = join(cwd, "config.yaml");
+
+		expect(run(["--config", cwd, "init"], cwd).exitCode).toBe(0);
+		const result = run(["--config", configPath, "orchestration", "show"], cwd);
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain(`Config directory: ${cwd}`);
+		expect(result.stdout).toContain(`Pi2Pi extension: ${join(cwd, "pi2pi.ts")}`);
+		expect(result.stdout).toContain(`Broker script: ${join(cwd, "broker.ts")}`);
+		expect(existsSync(join(cwd, "pi2pi.ts"))).toBe(true);
+		expect(existsSync(join(cwd, "broker.ts"))).toBe(true);
+	});
 });

@@ -38,6 +38,7 @@
  */
 
 import type { ServerWebSocket } from "bun";
+import { renderBrokerScreen, type BrokerRoomEntry } from "./broker-ui";
 
 const DEFAULT_PORT = 7331;
 const portArg = process.argv.indexOf("--port");
@@ -161,83 +162,21 @@ if (isTTY) {
 	});
 }
 
-function truncateAnsi(str: string, limit: number): string {
-	let visibleCount = 0;
-	let result = "";
-	let inAnsi = false;
-
-	for (let i = 0; i < str.length; i++) {
-		const char = str[i];
-		if (char === "\u001B") {
-			inAnsi = true;
-		}
-
-		if (inAnsi) {
-			result += char;
-			if (char === "m") {
-				inAnsi = false;
-			}
-		} else {
-			if (visibleCount < limit) {
-				result += char;
-				visibleCount++;
-			} else {
-				result += "\u001B[0m"; // Ensure style reset
-				break;
-			}
-		}
-	}
-	return result;
-}
-
-function getVisibleLength(str: string): number {
-	return str.replace(/\u001B\[\d+(;\d+)*m/g, "").length;
-}
-
-/** Format a token count compactly: 52000 → "52k", 1500000 → "1.5M", null → "—" */
-function fmtTokens(n: number | null): string {
-	if (n === null) return "—";
-	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
-	if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
-	return String(n);
-}
-
 function draw() {
 	if (!isTTY) return;
 
 	const width = process.stdout.columns || 80;
 	const height = process.stdout.rows || 24;
-
-	// 40% top pane, 60% bottom pane
-	const topHeight = Math.max(5, Math.floor(height * 0.4));
-	const dividerRow = topHeight + 1;
-	const bottomHeight = height - dividerRow;
-
-	let output = "\u001B[H"; // Move to home (1,1)
-
-	// --- Top Pane: Title ---
-	const title = " Pi2Pi Broker — Rooms & Agents ";
-	const titleBar = "─".repeat(3) + title + "─".repeat(Math.max(0, width - title.length - 3));
-	output += `\u001B[1;36m${titleBar}\u001B[0m\n`;
-
-	// Gather rooms with full agent status data
-	type RoomEntry = {
-		name: string;
-		displayName: string;
-		state: "active" | "idle" | null;
-		model: string | null;
-		contextTokens: number | null;
-		contextWindow: number | null;
-		contextPercent: number | null;
-	};
-	const rooms: Record<string, RoomEntry[]> = {};
+	const rooms: Record<string, BrokerRoomEntry[]> = {};
 	let totalAgents = 0;
+
 	for (const ws of agents.values()) {
 		if (ws.data.name && ws.data.room) {
 			const r = ws.data.room;
 			(rooms[r] ??= []).push({
 				name: ws.data.name,
 				displayName: ws.data.displayName ?? ws.data.name,
+				role: ws.data.role,
 				state: ws.data.state,
 				model: ws.data.model,
 				contextTokens: ws.data.contextTokens,
@@ -248,114 +187,13 @@ function draw() {
 		}
 	}
 
-	const roomList = Object.entries(rooms);
-	let currentLine = 2; // Line 1 is the titleBar
-
-	for (let i = 0; i < roomList.length && currentLine < topHeight; i++) {
-		const [roomName, entries] = roomList[i];
-		const roomLine = `  \u001B[1;33m🏠 ${roomName}\u001B[0m`;
-		const truncatedRoom = truncateAnsi(roomLine, width - 2);
-		output += truncatedRoom + " ".repeat(Math.max(0, width - getVisibleLength(truncatedRoom))) + "\n";
-		currentLine++;
-
-		// ── Compute per-room column widths for alignment ─────────────────────
-		// name column: widest agent name
-		const nameWidth = Math.max(...entries.map(e => e.displayName.length));
-		// model column: widest model string (or "—" placeholder)
-		const modelWidth = Math.max(...entries.map(e => (e.model ?? "—").length));
-		// token column: widest "tokens/window" string e.g. "52k/128k"
-		const tokWidth = Math.max(...entries.map(e =>
-			`${fmtTokens(e.contextTokens)}/${fmtTokens(e.contextWindow)}`.length
-		));
-
-		for (let j = 0; j < entries.length && currentLine < topHeight; j++) {
-			const e = entries[j];
-			const isLast = j === entries.length - 1;
-			const branch = isLast ? "└─" : "├─";
-
-			// State column — fixed width: "● active" (8) / "○ idle  " (8)
-			const isActive = e.state === "active";
-			const hasState = e.state !== null;
-			const stateDot   = isActive ? "●" : "○";
-			const stateLabel = isActive ? "active" : (hasState ? "idle  " : "?     ");
-			const stateColor = isActive ? "\u001B[32m" : "\u001B[90m";
-
-			// Model column — padded to widest
-			const model = (e.model ?? "—").padEnd(modelWidth);
-
-			// Context bar — 8 blocks, colour by fill level
-			const pct = e.contextPercent;
-			const barColor = pct === null
-				? "\u001B[90m"
-				: pct >= 80 ? "\u001B[31m"
-				: pct >= 50 ? "\u001B[33m"
-				: "\u001B[32m";
-			const filled = pct === null ? 0 : Math.min(8, Math.round((pct / 100) * 8));
-			const bar = "█".repeat(filled) + "░".repeat(8 - filled);
-
-			// Percentage column — right-aligned in 4 chars ("100%" / " 42%" / "  —%")
-			const pctStr = pct === null ? "  —%" : `${Math.round(pct)}%`.padStart(4);
-
-			// Token counts column — padded to widest
-			const tokStr = `${fmtTokens(e.contextTokens)}/${fmtTokens(e.contextWindow)}`.padEnd(tokWidth);
-
-			// Name column — padded to widest
-			const namePad = e.displayName.padEnd(nameWidth);
-
-			const agentLine =
-				`    \u001B[90m${branch}\u001B[0m ` +
-				`\u001B[32m${namePad}\u001B[0m  ` +
-				`${stateColor}${stateDot} ${stateLabel}\u001B[0m  ` +
-				`\u001B[90m${model}\u001B[0m  ` +
-				`${barColor}[${bar}]\u001B[0m ` +
-				`${pctStr}  ` +
-				`\u001B[90m(${tokStr})\u001B[0m`;
-
-			const truncatedAgent = truncateAnsi(agentLine, width - 1);
-			output += truncatedAgent + " ".repeat(Math.max(0, width - getVisibleLength(truncatedAgent))) + "\n";
-			currentLine++;
-		}
-	}
-
-	if (roomList.length === 0 && currentLine < topHeight) {
-		const line = "  (No registered agents)";
-		output += line + " ".repeat(Math.max(0, width - line.length)) + "\n";
-		currentLine++;
-	}
-
-	while (currentLine < topHeight) {
-		output += " ".repeat(width) + "\n";
-		currentLine++;
-	}
-
-	// --- Divider Line ---
-	const divTitle = ` Logs (Total active agents: \u001B[1;32m${totalAgents}\u001B[1;36m) `;
-	const visualDivTitle = divTitle.replace(/\u001B\[\d+(;\d+)*m/g, "");
-	const divider = "─".repeat(3) + divTitle + "─".repeat(Math.max(0, width - visualDivTitle.length - 3));
-	output += `\u001B[1;36m${divider}\u001B[0m\n`;
-
-	// --- Bottom Pane: Logs ---
-	const visibleLogsCount = bottomHeight;
-	const startIndex = Math.max(0, logBuffer.length - visibleLogsCount);
-	const visibleLogs = logBuffer.slice(startIndex, startIndex + visibleLogsCount);
-
-	let logLineCount = 0;
-	for (const logLine of visibleLogs) {
-		// Strip any newlines that may have survived (defensive) and truncate
-		// to terminal width so no line can wrap onto a second row.
-		const singleLine = logLine.replace(/\r\n|\r|\n/g, " ");
-		const truncated = truncateAnsi(singleLine, width - 1);
-		const padding = " ".repeat(Math.max(0, width - getVisibleLength(truncated)));
-		output += truncated + padding + "\n";
-		logLineCount++;
-	}
-
-	while (logLineCount < bottomHeight) {
-		output += " ".repeat(width) + "\n";
-		logLineCount++;
-	}
-
-	process.stdout.write(output);
+	process.stdout.write(renderBrokerScreen({
+		width,
+		height,
+		rooms,
+		logs: logBuffer,
+		totalAgents,
+	}));
 }
 
 function log(msg: string) {

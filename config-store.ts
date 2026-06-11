@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve } from "path";
-import { parse, stringify } from "yaml";
+import { Document, isScalar, parse, visit } from "yaml";
+import defaultRolePromptsYaml from "./default-role-prompts.yaml" with { type: "text" };
 
 const DEFAULT_BROKER_URL = "ws://localhost:7331";
 const DEFAULT_LEADERSHIP_ROOM = "leadership";
@@ -145,8 +146,7 @@ function deriveProjectRoot(configDir: string): string {
 }
 
 export function builtInDefaultRoles(model = DEFAULT_ROLE_MODEL): Record<string, RoleDefinition> {
-	const promptsPath = join(import.meta.dir, "default-role-prompts.yaml");
-	const parsed = parse(readFileSync(promptsPath, "utf8")) as { roles?: Record<string, string> } | null;
+	const parsed = parse(defaultRolePromptsYaml) as { roles?: Record<string, string> } | null;
 	const promptRoles = parsed?.roles ?? {};
 	const roles: Record<string, RoleDefinition> = {};
 
@@ -214,9 +214,19 @@ export function loadConfig(configPath?: string): LoadedConfig {
 	};
 }
 
+export function stringifyConfig(config: Pi2PiConfig): string {
+	const doc = new Document(config);
+	visit(doc, (_key, node) => {
+		if (isScalar(node) && typeof node.value === "string" && node.value.includes("\n")) {
+			node.type = "BLOCK_LITERAL";
+		}
+	});
+	return String(doc);
+}
+
 export function saveConfig(loaded: LoadedConfig): void {
 	mkdirSync(dirname(loaded.configPath), { recursive: true });
-	writeFileSync(loaded.configPath, stringify(loaded.config), "utf8");
+	writeFileSync(loaded.configPath, stringifyConfig(loaded.config), "utf8");
 }
 
 export function resolveStatePaths(loaded: LoadedConfig): ResolvedStatePaths {

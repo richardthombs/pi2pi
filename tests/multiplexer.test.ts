@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import type { LoadedConfig } from "../config-store";
 import { defaultConfig } from "../config-store";
 import { buildTmuxLikeCommandSequence, cmuxLayoutForCommands, selectMultiplexerKind } from "../multiplexer";
+import embeddedBrokerSource from "../broker.ts" with { type: "text" };
 
 function git(args: string[], cwd?: string): string {
 	const proc = Bun.spawnSync(["git", ...args], {
@@ -88,11 +89,15 @@ describe("tmux-like command generation", () => {
 
 	test("builds leadership, broker, and team windows for tmux-like backends", () => {
 		const commands = buildTmuxLikeCommandSequence(loaded, "tmux", "tmux");
+		const brokerPath = join(root, "broker.ts");
+		expect(existsSync(brokerPath)).toBe(true);
+		expect(readFileSync(brokerPath, "utf8")).toBe(embeddedBrokerSource);
 		expect(commands[0]).toEqual(["tmux", "has-session", "-t", "pi2pi-org"]);
 		expect(commands[1]).toContain("new-session");
 		expect(commands[1]).toContain("leadership");
 		expect(commands.some(command => command.includes("set-option") && command.includes("extended-keys") && command.includes("on"))).toBe(true);
 		expect(commands.some(command => command.includes("new-window") && command.includes("broker"))).toBe(true);
+		expect(commands.some(command => command.some(el => el.includes(brokerPath)))).toBe(true);
 		expect(commands.some(command => command.includes("new-window") && command.includes("engineering"))).toBe(true);
 		expect(commands.some(command => command.includes("split-window") && command.some(el => el.startsWith("pi2pi-org:engineering")))).toBe(true);
 		const worktreePath = join(root, ".pi", "workspaces", "engineering", "pi2pi");
@@ -102,11 +107,43 @@ describe("tmux-like command generation", () => {
 	});
 
 	test("psmux launch scripts set repo cwd and git ceiling to the workspace root", () => {
+		loaded.config.roles.manager.systemPrompt = "Leader's base prompt with \"quotes\".";
 		buildTmuxLikeCommandSequence(loaded, "psmux", "psmux");
+		const brokerPath = join(root, "broker.ts");
+		expect(existsSync(brokerPath)).toBe(true);
+		expect(readFileSync(brokerPath, "utf8")).toBe(embeddedBrokerSource);
 		const scriptPath = join(root, ".pi", "runtime", "launch-scripts", "engineering-Alice.ps1");
+		const promptPath = join(root, ".pi", "runtime", "launch-prompts", "engineering-Alice.txt");
 		const script = readFileSync(scriptPath, "utf8");
 		expect(script).toContain(`$env:GIT_CEILING_DIRECTORIES = '${join(root, ".pi", "workspaces", "engineering").replace(/'/g, "''")}'`);
 		expect(script).toContain(`Set-Location -LiteralPath '${join(root, ".pi", "workspaces", "engineering", "pi2pi").replace(/'/g, "''")}'`);
+		expect(script).toContain(`$appendSystemPrompt = [string](Get-Content -LiteralPath '${promptPath.replace(/'/g, "''")}' -Raw)`);
+		expect(script).toContain("$launchArgs = @(");
+		expect(script).toContain("& $launchExe @launchRest");
+		expect(existsSync(promptPath)).toBe(true);
+		const expectedPrompt = readFileSync(promptPath, "utf8");
+		expect(expectedPrompt).toContain("Leader's base prompt with \"quotes\".");
+
+		const fakePiPath = join(root, "fake-pi.ps1");
+		const capturePath = join(root, "captured-args.json");
+		writeFileSync(fakePiPath, [
+			"$items = @()",
+			"foreach ($a in $args) { $items += $a }",
+			`$items | ConvertTo-Json -Compress | Set-Content -LiteralPath '${capturePath.replace(/'/g, "''")}'`,
+		].join("\n"), "utf8");
+		writeFileSync(scriptPath, script.replace("  'pi'", `  '${fakePiPath.replace(/'/g, "''")}'`), "utf8");
+
+		const powershellPath = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+		const result = Bun.spawnSync([powershellPath, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		expect(result.exitCode).toBe(0);
+		expect(existsSync(capturePath)).toBe(true);
+		const capturedArgs = JSON.parse(readFileSync(capturePath, "utf8")) as string[];
+		expect(capturedArgs[capturedArgs.indexOf("--append-system-prompt") + 1]).toBe(expectedPrompt);
+		expect(capturedArgs).toContain("--agent-name");
+		expect(capturedArgs).toContain("engineering.lead");
 	});
 });
 

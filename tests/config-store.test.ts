@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { builtInDefaultRoles, deriveRepoName, loadConfig, saveConfig } from "../config-store";
+import { builtInDefaultRoles, deriveRepoName, loadConfig, saveConfig, stringifyConfig } from "../config-store";
 
 describe("config-store", () => {
 	test("deriveRepoName strips .git and normalizes separators", () => {
@@ -32,6 +32,20 @@ describe("config-store", () => {
 		expect(roles["ux"].title).toBe("User Experience");
 		expect(roles["product"].title).toBe("Product Manager");
 		expect(roles["critic"].systemPrompt).toContain("constructive");
+	});
+
+	test("stringifyConfig preserves multiline role prompts without inserting blank lines between bullet items", () => {
+		const yaml = stringifyConfig({
+			version: 1,
+			state: {},
+			orchestration: {},
+			roles: builtInDefaultRoles(),
+			repositories: {},
+			workspaces: {},
+		});
+		expect(yaml).toContain("systemPrompt: |");
+		expect(yaml).toContain("- clarify the goal before delegating\n      - decide which specialists need to be involved");
+		expect(yaml).not.toContain("- clarify the goal before delegating\n\n      - decide which specialists need to be involved");
 	});
 
 	test("saveConfig persists shared roles and workspaces", () => {

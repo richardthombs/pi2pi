@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
+import embeddedPi2PiExtensionSource from "./pi2pi.ts" with { type: "text" };
 import type { LoadedConfig, MemberDefinition, RoleDefinition, WorkspaceDefinition } from "./config-store";
 import {
 	brokerUrlForWorkspace,
@@ -47,7 +48,15 @@ export interface LaunchSpec {
 	args: string[];
 }
 
-const extensionPath = join(import.meta.dir, "pi2pi.ts");
+export function ensurePi2PiExtension(loaded: LoadedConfig): string {
+	const extensionPath = join(loaded.configDir, "pi2pi.ts");
+	mkdirSync(dirname(extensionPath), { recursive: true });
+	const current = existsSync(extensionPath) ? readFileSync(extensionPath, "utf8") : null;
+	if (current !== embeddedPi2PiExtensionSource) {
+		writeFileSync(extensionPath, embeddedPi2PiExtensionSource, "utf8");
+	}
+	return extensionPath;
+}
 
 function runtimeStatePath(loaded: LoadedConfig): string {
 	const { runtimeRoot } = ensureStateDirectories(loaded);
@@ -184,6 +193,7 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 
 	const workspaceRoot = workspaceRootPath(loaded, workspaceName);
 	const brokerUrl = brokerUrlForWorkspace(loaded.config, workspace);
+	const extensionPath = ensurePi2PiExtension(loaded);
 	const repoList = [...workspace.repositories];
 	const cwd = workspaceAgentCwd(workspaceRoot, repoList);
 	const leadershipRoom = leadershipRoomName(loaded.config);
@@ -237,6 +247,7 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 export function buildOverlordArgs(loaded: LoadedConfig): string[] {
 	const leadershipRoom = leadershipRoomName(loaded.config);
 	const brokerUrl = loaded.config.orchestration.broker ?? "ws://localhost:7331";
+	const extensionPath = ensurePi2PiExtension(loaded);
 	const name = overlordName(loaded.config);
 	const sessionDir = agentSessionDir(loaded, "orchestration", name);
 	const sessionName = `${name} (overlord)`;

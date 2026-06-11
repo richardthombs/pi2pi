@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import embeddedBrokerSource from "./broker.ts" with { type: "text" };
 import type { LoadedConfig } from "./config-store";
 import { ensureStateDirectories, orchestrationSessionName } from "./config-store";
 import { buildOverlordArgs, createWorkspaceLaunchSpecs } from "./process-manager";
@@ -147,14 +148,32 @@ function buildLaunchCommand(
 
 	const { runtimeRoot } = ensureStateDirectories(loaded);
 	const scriptsDir = join(runtimeRoot, "launch-scripts");
+	const promptsDir = join(runtimeRoot, "launch-prompts");
 	mkdirSync(scriptsDir, { recursive: true });
+	mkdirSync(promptsDir, { recursive: true });
 	const scriptPath = join(scriptsDir, `${key}.ps1`);
+	const appendPromptIndex = args.indexOf("--append-system-prompt");
+	let promptLoaderLines: string[] = [];
+	let argEntries = args.map(psEsc);
+	if (appendPromptIndex !== -1 && appendPromptIndex + 1 < args.length) {
+		const promptPath = join(promptsDir, `${key}.txt`);
+		writeFileSync(promptPath, args[appendPromptIndex + 1], "utf8");
+		promptLoaderLines = [`$appendSystemPrompt = [string](Get-Content -LiteralPath ${psEsc(promptPath)} -Raw)`];
+		argEntries = args.map((arg, index) => index === appendPromptIndex + 1 ? "$appendSystemPrompt" : psEsc(arg));
+	}
 	const script = [
 		"$ErrorActionPreference = 'Stop'",
 		...(gitCeilingDir ? [`$env:GIT_CEILING_DIRECTORIES = ${psEsc(gitCeilingDir)}`] : []),
 		...(cwd ? [`Set-Location -LiteralPath ${psEsc(cwd)}`] : []),
+		...promptLoaderLines,
+		"$launchArgs = @(",
+		...argEntries.map(entry => `  ${entry}`),
+		")",
+		"$launchExe = $launchArgs[0]",
+		"$launchRest = @()",
+		"if ($launchArgs.Length -gt 1) { $launchRest = $launchArgs[1..($launchArgs.Length - 1)] }",
 		"Clear-Host",
-		`& ${args.map(psEsc).join(" ")}`,
+		"& $launchExe @launchRest",
 	].join("\n") + "\n";
 	writeFileSync(scriptPath, script, "utf8");
 
@@ -168,6 +187,16 @@ function normalizePaneCommands(commands: Array<PaneLaunchCommand | string>, defa
 	return commands.map(command => typeof command === "string" ? { cwd: defaultCwd, command } : command);
 }
 
+export function ensureBrokerEntrypoint(loaded: LoadedConfig): string {
+	const brokerPath = join(loaded.configDir, "broker.ts");
+	mkdirSync(loaded.configDir, { recursive: true });
+	const current = existsSync(brokerPath) ? readFileSync(brokerPath, "utf8") : null;
+	if (current !== embeddedBrokerSource) {
+		writeFileSync(brokerPath, embeddedBrokerSource, "utf8");
+	}
+	return brokerPath;
+}
+
 function localBrokerArgs(loaded: LoadedConfig): string[] | null {
 	const brokerUrl = loaded.config.orchestration.broker ?? "ws://localhost:7331";
 	let parsed: URL;
@@ -179,7 +208,8 @@ function localBrokerArgs(loaded: LoadedConfig): string[] | null {
 	const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
 	if (parsed.protocol !== "ws:" || !localHosts.has(parsed.hostname)) return null;
 	const port = parsed.port ? Number(parsed.port) : 7331;
-	return ["bun", "broker.ts", "--port", String(Number.isFinite(port) ? port : 7331)];
+	const brokerPath = ensureBrokerEntrypoint(loaded);
+	return ["bun", brokerPath, "--port", String(Number.isFinite(port) ? port : 7331)];
 }
 
 function buildTmuxLikePlan(loaded: LoadedConfig, forWindowsShell: boolean) {

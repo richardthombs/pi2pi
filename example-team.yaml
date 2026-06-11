@@ -7,18 +7,6 @@ roles:
     title: Software Engineer
     description: Writes and reviews code, fixes bugs, and implements features
     model: github-copilot/claude-sonnet-4.6
-    tools:
-      - bash
-      - read
-      - write
-      - edit
-      - search_files
-      - tell
-      - who
-      - wait
-      - read_reply
-      - replies
-      - reply
     systemPrompt: |
       You are {{name}}, a software engineer on the {{team}} team.
       Write clean, well-tested code and review others' contributions.
@@ -29,18 +17,6 @@ roles:
     title: QA Engineer
     description: Tests features, writes test cases, and identifies bugs
     model: github-copilot/claude-sonnet-4.6
-    tools:
-      - bash
-      - read
-      - write
-      - edit
-      - search_files
-      - tell
-      - who
-      - wait
-      - read_reply
-      - replies
-      - reply
     systemPrompt: |
       You are {{name}}, a QA engineer on the {{team}} team.
       Test features thoroughly, write clear bug reports, and verify
@@ -51,13 +27,6 @@ roles:
     title: Project Manager
     description: Coordinates tasks and delegates work to team members
     model: github-copilot/claude-sonnet-4.6
-    tools:
-      - tell
-      - who
-      - wait
-      - read_reply
-      - replies
-      - reply
     systemPrompt: |
       You are {{name}}, a project manager on the {{team}} team.
       Break down tasks, delegate to the right team members, and track

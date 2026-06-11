@@ -13,7 +13,7 @@ import { join, resolve } from "path";
 import { homedir } from "os";
 import { tmpdir } from "os";
 import { parse } from "yaml";
-import { pitHomeDir, globalConfigPath, loadConfig } from "../config-store";
+import { builtInDefaultRoles, pitHomeDir, globalConfigPath, loadConfig } from "../config-store";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -118,17 +118,36 @@ describe("pit init", () => {
 		expect(state.reposRoot).toBe(join(pitDir, "repos"));
 		expect(state.workspacesRoot).toBe(join(pitDir, "workspaces"));
 		expect(state.runtimeRoot).toBe(join(pitDir, "runtime"));
-		expect(Object.keys(roles).sort()).toEqual([
-			"architect",
-			"critic",
-			"dev",
-			"leader",
-			"product",
-			"qa",
-			"ux",
-		]);
-		expect(roles["leader"].title).toBe("Team Leader");
-		expect(roles["dev"].tools).toBe("all");
+		expect(roles).toEqual(builtInDefaultRoles());
+
+		rmSync(fakeHome, { recursive: true, force: true });
+	});
+
+	test("supports --config for init and seeds the default roles into the specified config home", () => {
+		const fakeHome = tempDir();
+		const env = { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome };
+		const customHome = join(fakeHome, "custom-pit-home");
+		const customConfig = join(customHome, "config.yaml");
+		const result = Bun.spawnSync(
+			["bun", join(import.meta.dir, "../cli.ts"), "--config", customHome, "init"],
+			{ cwd: fakeHome, env, stdout: "pipe", stderr: "pipe" }
+		);
+
+		expect(result.exitCode).toBe(0);
+		expect(existsSync(customHome)).toBe(true);
+		expect(existsSync(customConfig)).toBe(true);
+		expect(existsSync(join(customHome, "repos"))).toBe(true);
+		expect(existsSync(join(customHome, "workspaces"))).toBe(true);
+		expect(existsSync(join(customHome, "runtime"))).toBe(true);
+		expect(existsSync(join(fakeHome, ".pit"))).toBe(false);
+
+		const cfg = parse(readFileSync(customConfig, "utf8")) as Record<string, unknown>;
+		const state = cfg.state as Record<string, string>;
+		const roles = cfg.roles as Record<string, Record<string, unknown>>;
+		expect(state.reposRoot).toBe(join(customHome, "repos"));
+		expect(state.workspacesRoot).toBe(join(customHome, "workspaces"));
+		expect(state.runtimeRoot).toBe(join(customHome, "runtime"));
+		expect(roles).toEqual(builtInDefaultRoles());
 
 		rmSync(fakeHome, { recursive: true, force: true });
 	});
