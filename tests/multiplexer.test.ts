@@ -102,7 +102,11 @@ describe("tmux-like command generation", () => {
 		expect(commands.some(command => command.includes("set-option") && command.includes("extended-keys") && command.includes("on"))).toBe(true);
 		expect(commands.some(command => command.includes("new-window") && command.includes("broker"))).toBe(true);
 		expect(commands.some(command => command.some(el => el.includes(brokerPath)))).toBe(true);
+		expect(commands.some(command => command[1] === "select-pane" && command.includes("-T") && command.includes("overlord"))).toBe(true);
+		expect(commands.some(command => command[1] === "select-pane" && command.includes("-T") && command.includes("broker"))).toBe(true);
 		expect(commands.some(command => command.includes("new-window") && command.includes("engineering"))).toBe(true);
+		expect(commands.some(command => command[1] === "select-pane" && command.includes("-T") && command.includes("Alice"))).toBe(true);
+		expect(commands.some(command => command[1] === "select-pane" && command.includes("-T") && command.includes("Bob"))).toBe(true);
 		expect(commands.some(command => command.includes("split-window") && command.some(el => el.startsWith("pi2pi-org:engineering")))).toBe(true);
 		const worktreePath = join(root, ".pi", "workspaces", "engineering", "pi2pi");
 		const workspaceRoot = join(root, ".pi", "workspaces", "engineering");
@@ -135,6 +139,8 @@ describe("tmux-like command generation", () => {
 		expect(commandText).toContain(`'Leader''s base prompt with "quotes".', 'Second line.'`);
 		expect(commandText).toContain("-join [Environment]::NewLine");
 		expect(commandText).toContain("Clear-Host; & 'pi'");
+		expect(commands.some(command => command[1] === "select-pane" && command.includes("-T") && command.includes("Alice"))).toBe(true);
+		expect(commands.some(command => command[1] === "select-pane" && command.includes("-T") && command.includes("Bob"))).toBe(true);
 
 		const fakePiPath = join(root, "fake-pi.ps1");
 		const capturePath = join(root, "captured-args.json");

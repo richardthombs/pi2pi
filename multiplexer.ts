@@ -25,6 +25,7 @@ interface PaneLaunchCommand {
 	cwd: string;
 	gitCeilingDir?: string;
 	command: string;
+	title?: string;
 }
 
 interface TeamWindowPlan {
@@ -37,6 +38,7 @@ interface SingleCommandWindowPlan {
 	name: string;
 	cwd: string;
 	command: string;
+	title?: string;
 }
 
 function shellEsc(arg: string): string {
@@ -133,6 +135,7 @@ function orderedWorkspaceCommands(loaded: LoadedConfig, workspaceName: string, f
 			cwd: spec.cwd,
 			gitCeilingDir: spec.gitCeilingDir,
 			command: buildLaunchCommand(loaded, `${workspaceName}-${spec.memberName}`, spec.args, forWindowsShell, spec.cwd, spec.gitCeilingDir),
+			title: spec.memberName,
 		})),
 	};
 }
@@ -176,6 +179,10 @@ function normalizePaneCommands(commands: Array<PaneLaunchCommand | string>, defa
 	return commands.map(command => typeof command === "string" ? { cwd: defaultCwd, command } : command);
 }
 
+function paneTitleCommands(executable: string, target: string, title?: string): string[][] {
+	return title ? [[executable, "select-pane", "-t", target, "-T", title]] : [];
+}
+
 export function ensureBrokerEntrypoint(loaded: LoadedConfig): string {
 	const brokerPath = join(loaded.configDir, "broker.ts");
 	const brokerUiPath = join(loaded.configDir, "broker-ui.ts");
@@ -215,6 +222,7 @@ function buildTmuxLikePlan(loaded: LoadedConfig, forWindowsShell: boolean) {
 			name: "broker",
 			cwd: loaded.projectRoot,
 			command: buildLaunchCommand(loaded, "broker", brokerArgs, forWindowsShell),
+			title: "broker",
 		}
 		: null;
 	const teamWindows = Object.keys(loaded.config.workspaces).sort().map(name => orderedWorkspaceCommands(loaded, name, forWindowsShell));
@@ -224,6 +232,7 @@ function buildTmuxLikePlan(loaded: LoadedConfig, forWindowsShell: boolean) {
 			name: "leadership",
 			cwd: loaded.projectRoot,
 			command: leadershipCommand,
+			title: "overlord",
 		},
 		brokerWindow,
 		teamWindows,
@@ -291,6 +300,7 @@ export function buildColumnSplitCommands(
 			"-c", colCmds[j][0].cwd,
 			colCmds[j][0].command,
 		]);
+		result.push(...paneTitleCommands(executable, `${winTarget}.${rightmostZone + 1}`, colCmds[j][0].title));
 		rightmostZone = j;
 		remainingCols--;
 	}
@@ -309,8 +319,11 @@ export function buildColumnSplitCommands(
 				"-c", colCmds[j][k].cwd,
 				colCmds[j][k].command,
 			]);
+			result.push(...paneTitleCommands(executable, `${winTarget}.${target + 1}`, colCmds[j][k].title));
 		}
 	}
+
+	result.unshift(...paneTitleCommands(executable, `${winTarget}.0`, colCmds[0][0]?.title));
 
 	// Focus leader pane (top-left = pane 0)
 	result.push([executable, "select-pane", "-t", `${winTarget}.0`]);
@@ -333,6 +346,7 @@ export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: s
 		"-y", String(size.height),
 		plan.leadership.command,
 	]);
+	commands.push(...paneTitleCommands(executable, `${plan.sessionName}:${plan.leadership.name}.0`, plan.leadership.title));
 	commands.push([executable, "set-option", "-t", plan.sessionName, "-g", "extended-keys", "on"]);
 
 	if (plan.brokerWindow) {
@@ -344,11 +358,13 @@ export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: s
 			"-c", plan.brokerWindow.cwd,
 			plan.brokerWindow.command,
 		]);
+		commands.push(...paneTitleCommands(executable, `${plan.sessionName}:${plan.brokerWindow.name}.0`, plan.brokerWindow.title));
 	}
 
 	for (const window of plan.teamWindows) {
 		// Always create window with leader (first command)
 		commands.push([executable, "new-window", "-t", plan.sessionName, "-n", window.name, "-c", window.commands[0].cwd, window.commands[0].command]);
+		commands.push(...paneTitleCommands(executable, `${plan.sessionName}:${window.name}.0`, window.commands[0].title));
 		// Append split-window + select-pane commands from the shared helper
 		for (const cmd of buildColumnSplitCommands(executable, plan.sessionName, window.name, window.commands)) {
 			commands.push(cmd);
