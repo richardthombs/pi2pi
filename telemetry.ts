@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   from_agent        TEXT,
   overlord_request  TEXT,
   role              TEXT,
-  team              TEXT
+  team              TEXT,
+  user_prompt       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS turns (
@@ -130,6 +131,7 @@ export default function (pi: ExtensionAPI) {
 	// Decoration context emitted by pi2pi (or others) before or during a task.
 	// Buffered here if it arrives before agent_start fires.
 	let pendingAnnotation: Record<string, string> | null = null;
+	let pendingUserPrompt: string | null = null;
 
 	// ── Helpers ───────────────────────────────────────────────────────────────
 	function now(): string {
@@ -227,6 +229,11 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	// ── Capture user prompt ─────────────────────────────────────────────────
+	pi.on("before_agent_start", async (event) => {
+		pendingUserPrompt = (event as { prompt?: string }).prompt ?? null;
+	});
+
 	// ── Task lifecycle (agent_start / agent_end) ──────────────────────────────
 	pi.on("agent_start", async () => {
 		if (!db || !currentSessionId) return;
@@ -235,8 +242,9 @@ export default function (pi: ExtensionAPI) {
 		currentTaskId = taskId;
 
 		db.prepare(
-			`INSERT INTO tasks (id, session_id, started_at) VALUES (?, ?, ?)`
-		).run(taskId, currentSessionId, now());
+			`INSERT INTO tasks (id, session_id, started_at, user_prompt) VALUES (?, ?, ?, ?)`
+		).run(taskId, currentSessionId, now(), pendingUserPrompt ?? null);
+		pendingUserPrompt = null;
 
 		// Apply any decoration that arrived before this turn started
 		if (pendingAnnotation) {
@@ -369,7 +377,7 @@ export default function (pi: ExtensionAPI) {
 
 Tables:
   sessions(id, agent_name, session_label, model, provider, cwd, started_at, ended_at)
-  tasks(id, session_id, started_at, ended_at, pi2pi_message_id, from_agent, overlord_request, role, team)
+  tasks(id, session_id, started_at, ended_at, pi2pi_message_id, from_agent, overlord_request, role, team, user_prompt)
   turns(id, session_id, task_id, turn_index, started_at, ended_at, model, provider,
         tokens_input, tokens_output, tokens_cache_rd, tokens_cache_wr, tokens_total,
         cost_input, cost_output, cost_total, stop_reason)
@@ -520,6 +528,7 @@ Useful queries:
 					role: string | null;
 					team: string | null;
 					from_agent: string | null;
+					user_prompt: string | null;
 					started_at: string;
 					ended_at: string | null;
 				};
@@ -554,6 +563,7 @@ Useful queries:
 					`From:     ${task.from_agent ?? "—"}`,
 					`Started:  ${task.started_at}`,
 					`Ended:    ${task.ended_at ?? "in progress"}`,
+					`Prompt:   ${task.user_prompt ?? "(none)"}`,
 					`Request:  ${task.overlord_request ?? "(none)"}`,
 					``,
 				];
