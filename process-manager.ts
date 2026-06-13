@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import _embeddedPi2PiExtensionSource from "./pi2pi.ts" with { type: "text" };
 const embeddedPi2PiExtensionSource = _embeddedPi2PiExtensionSource as unknown as string;
+import _embeddedTelemetryExtensionSource from "./telemetry.ts" with { type: "text" };
+const embeddedTelemetryExtensionSource = _embeddedTelemetryExtensionSource as unknown as string;
 import type { LoadedConfig, MemberDefinition, RoleDefinition, WorkspaceDefinition } from "./config-store";
 import {
 	brokerUrlForWorkspace,
@@ -57,6 +59,21 @@ export function ensurePi2PiExtension(loaded: LoadedConfig): string {
 		writeFileSync(extensionPath, embeddedPi2PiExtensionSource, "utf8");
 	}
 	return extensionPath;
+}
+
+export function ensureTelemetryExtension(loaded: LoadedConfig): string {
+	const extensionPath = join(loaded.configDir, "telemetry.ts");
+	mkdirSync(dirname(extensionPath), { recursive: true });
+	const current = existsSync(extensionPath) ? readFileSync(extensionPath, "utf8") : null;
+	if (current !== embeddedTelemetryExtensionSource) {
+		writeFileSync(extensionPath, embeddedTelemetryExtensionSource, "utf8");
+	}
+	return extensionPath;
+}
+
+function telemetryDbPath(loaded: LoadedConfig): string {
+	const { runtimeRoot } = ensureStateDirectories(loaded);
+	return join(runtimeRoot, "telemetry.db");
 }
 
 function runtimeStatePath(loaded: LoadedConfig): string {
@@ -209,6 +226,8 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 	const workspaceRoot = workspaceRootPath(loaded, workspaceName);
 	const brokerUrl = brokerUrlForWorkspace(loaded.config, workspace);
 	const extensionPath = ensurePi2PiExtension(loaded);
+	const telemetryPath = ensureTelemetryExtension(loaded);
+	const telemetryDb = telemetryDbPath(loaded);
 	const repoList = [...workspace.repositories];
 	const cwd = workspaceAgentCwd(workspaceRoot, repoList);
 	const leadershipRoom = leadershipRoomName(loaded.config);
@@ -240,6 +259,7 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 			"--session-dir", sessionDir,
 			"--name", sessionName,
 			"-e", extensionPath,
+			"-e", telemetryPath,
 			"--agent-name", handle,
 			"--display-name", member.name,
 			"--agent-role", member.role,
@@ -250,6 +270,8 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 			"--append-system-prompt", rolePromptFile,
 			"--append-system-prompt", dynamicContext,
 			"--broker", brokerUrl,
+			"--telemetry-db", telemetryDb,
+			"--telemetry-agent-name", handle,
 		];
 
 		if (role.tools !== "all") args.push("--tools", role.tools.join(","));
@@ -274,6 +296,8 @@ export function buildOverlordArgs(loaded: LoadedConfig): string[] {
 	const leadershipRoom = leadershipRoomName(loaded.config);
 	const brokerUrl = loaded.config.orchestration.broker ?? "ws://localhost:7331";
 	const extensionPath = ensurePi2PiExtension(loaded);
+	const telemetryPath = ensureTelemetryExtension(loaded);
+	const telemetryDb = telemetryDbPath(loaded);
 	const name = overlordName(loaded.config);
 	const sessionDir = agentSessionDir(loaded, "orchestration", name);
 	const sessionName = `${name} (overlord)`;
@@ -288,6 +312,7 @@ export function buildOverlordArgs(loaded: LoadedConfig): string[] {
 		"--session-dir", sessionDir,
 		"--name", sessionName,
 		"-e", extensionPath,
+		"-e", telemetryPath,
 		"--agent-name", name,
 		"--display-name", name,
 		"--agent-role", "overlord",
@@ -295,6 +320,8 @@ export function buildOverlordArgs(loaded: LoadedConfig): string[] {
 		"--default-room", "leadership",
 		"--broker", brokerUrl,
 		"--append-system-prompt", systemPrompt,
+		"--telemetry-db", telemetryDb,
+		"--telemetry-agent-name", name,
 	];
 }
 

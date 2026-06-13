@@ -386,10 +386,18 @@ export default function (pi: ExtensionAPI) {
 				break;
 			}
 
-			case "incoming": {
+				case "incoming": {
 				if (!id || !from || content === undefined) return;
 				const fromDisplay = friendlyName(connection, from);
 				incomingQueue.set(id, { id, from, roomAlias });
+				// Decorate telemetry with task context if the extension is loaded
+				pi.events.emit("telemetry:annotate", {
+					pi2pi_message_id: id,
+					from_agent: from,
+					overlord_request: content,
+					role: agentRole ?? "",
+					team: roomLabel(connection),
+				});
 				pi.sendMessage({
 					customType: "pi2pi-incoming",
 					content: `Message from ${fromDisplay} in ${roomLabel(connection)} [id: ${id}]: ${content}\n\nUse the reply tool with id=\"${id}\" to send your response.`,
@@ -929,6 +937,7 @@ export default function (pi: ExtensionAPI) {
 			if (!connection.ws || connection.ws.readyState !== WebSocket.OPEN) throw new Error(`Pi2Pi: not connected to broker for ${roomLabel(connection)}`);
 			incomingQueue.delete(params.id);
 			connection.ws.send(JSON.stringify({ type: "reply", id: incoming.id, content: params.content }));
+			pi.events.emit("telemetry:annotate", { pi2pi_message_id: incoming.id, reply_sent_at: new Date().toISOString() });
 			return { content: [{ type: "text", text: `Reply sent to ${incoming.from} in ${roomLabel(connection)}.` }], details: undefined };
 		},
 	});
@@ -1121,6 +1130,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			incomingQueue.delete(id);
 			connection.ws.send(JSON.stringify({ type: "reply", id: incoming.id, content }));
+			pi.events.emit("telemetry:annotate", { pi2pi_message_id: incoming.id, reply_sent_at: new Date().toISOString() });
 			ctx.ui.notify(`Reply sent to ${incoming.from} in ${roomLabel(connection)}.`);
 		},
 	});
