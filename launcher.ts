@@ -177,7 +177,7 @@ function resolveExecutable(name: string): string | null {
 
 function decodeOutput(output?: ArrayBufferLike | Uint8Array | null): string {
 	if (!output) return "";
-	return Buffer.from(output).toString("utf8").trim();
+	return Buffer.from(output as Uint8Array).toString("utf8").trim();
 }
 
 function launchHeadless(): void {

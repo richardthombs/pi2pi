@@ -191,7 +191,7 @@ beforeAll(async () => {
 
 	// Dynamic import ensures the module runs AFTER globalThis.WebSocket is patched.
 	const mod = await import("../pi2pi.ts");
-	factory = mod.default as (pi: MockPi) => void;
+	factory = mod.default as unknown as (pi: MockPi) => void;
 });
 
 afterAll(() => {

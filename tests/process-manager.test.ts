@@ -5,7 +5,8 @@ import { tmpdir } from "os";
 import type { LoadedConfig } from "../config-store";
 import { defaultConfig } from "../config-store";
 import { buildOverlordArgs, createWorkspaceLaunchSpecs } from "../process-manager";
-import embeddedPi2PiExtensionSource from "../pi2pi.ts" with { type: "text" };
+import _embeddedPi2PiExtensionSource from "../pi2pi.ts" with { type: "text" };
+const embeddedPi2PiExtensionSource = _embeddedPi2PiExtensionSource as unknown as string;
 
 describe("process-manager", () => {
 	test("leader joins both leadership and team rooms while teammates join only the team room", () => {

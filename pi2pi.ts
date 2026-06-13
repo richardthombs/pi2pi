@@ -109,7 +109,7 @@ export default function (pi: ExtensionAPI) {
 
 	const roomConnections = new Map<string, RoomConnection>();
 
-	let uiNotify: ((msg: string, level: "info" | "warning" | "error" | "success") => void) | null = null;
+	let uiNotify: ((msg: string, level?: "info" | "warning" | "error") => void) | null = null;
 	let uiSetStatus: ((id: string, text: string | undefined) => void) | null = null;
 
 	let agentModel: string | null = null;
@@ -143,7 +143,8 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function notify(msg: string, level: "info" | "warning" | "error" | "success" = "info") {
-		uiNotify?.(msg, level);
+		// pi's notify API does not include "success"; map it to "info"
+		uiNotify?.(msg, level === "success" ? "info" : level);
 	}
 
 	function setStatus(text: string | undefined) {
@@ -506,7 +507,7 @@ export default function (pi: ExtensionAPI) {
 		const box = new Box(1, 1, t => theme.bg("customMessageBg", t));
 		const toLabel = isBroadcast ? theme.fg("warning", "everyone") : theme.fg("accent", to);
 		const label = theme.fg("muted", "Asked ") + toLabel + roomText + theme.fg("muted", ": ");
-		box.addChild(new Text(label + theme.fg("dim", message.content), 0, 0));
+		box.addChild(new Text(label + theme.fg("dim", message.content as string), 0, 0));
 		return box;
 	});
 
@@ -637,7 +638,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		shutdownRequested = false;
-		uiNotify = ctx.ui.notify.bind(ctx.ui);
+		uiNotify = ctx.ui.notify.bind(ctx.ui) as typeof uiNotify;
 		uiSetStatus = ctx.ui.setStatus.bind(ctx.ui);
 		agentModel = ctx.model ? (ctx.model.name || ctx.model.id) : null;
 		getContextUsage = ctx.getContextUsage.bind(ctx);
@@ -812,7 +813,7 @@ export default function (pi: ExtensionAPI) {
 			if (failures.length > 0) throw new Error(failures.join("; "));
 
 			const targetList = sent.map(({ target, msgId }) => `${target} [id: ${msgId}]`).join(", ");
-			return { content: [{ type: "text", text: `Message sent to ${targetList} in ${roomLabel(connection)}.` }] };
+			return { content: [{ type: "text", text: `Message sent to ${targetList} in ${roomLabel(connection)}.` }], details: undefined };
 		},
 	});
 
@@ -825,14 +826,14 @@ export default function (pi: ExtensionAPI) {
 		async execute() {
 			if (!agentName) throw new Error("Pi2Pi: not connected");
 			if (sentHistory.size === 0) {
-				return { content: [{ type: "text", text: "No messages sent yet." }] };
+				return { content: [{ type: "text", text: "No messages sent yet." }], details: undefined };
 			}
 			const lines = [...sentHistory.values()].reverse().map(p => {
 				const status = p.repliedAt ? "✓" : "⏳";
 				const time = p.repliedAt ? `replied ${p.repliedAt.toLocaleTimeString()}` : `sent ${p.sentAt.toLocaleTimeString()}`;
 				return `${status} ${p.to} [${p.roomAlias}, id: ${p.id}] — \"${p.message}\" (${time})`;
 			});
-			return { content: [{ type: "text", text: `Sent messages (${sentHistory.size}):\n${lines.join("\n")}` }] };
+			return { content: [{ type: "text", text: `Sent messages (${sentHistory.size}):\n${lines.join("\n")}` }], details: undefined };
 		},
 	});
 
@@ -862,7 +863,7 @@ export default function (pi: ExtensionAPI) {
 			const results = await Promise.allSettled(promises);
 			const timedOut = results.map((result, index) => result.status === "rejected" ? params.ids[index] : null).filter(Boolean) as string[];
 			if (timedOut.length > 0) throw new Error(`Timed out waiting for replies to: ${timedOut.join(", ")}`);
-			return { content: [{ type: "text", text: `All ${params.ids.length} ${params.ids.length === 1 ? "reply" : "replies"} received. Use the read tool to retrieve ${params.ids.length === 1 ? "it" : "them"}.` }] };
+			return { content: [{ type: "text", text: `All ${params.ids.length} ${params.ids.length === 1 ? "reply" : "replies"} received. Use the read tool to retrieve ${params.ids.length === 1 ? "it" : "them"}.` }], details: undefined };
 		},
 	});
 
@@ -893,6 +894,7 @@ export default function (pi: ExtensionAPI) {
 			if (toolCallId) readReplyMeta.set(toolCallId, { from: fromDisplay, roomAlias: entry.roomAlias });
 			return {
 				content: [{ type: "text", text: `[Incoming message received from ${fromDisplay} in ${connection ? roomLabel(connection) : entry.roomAlias}, id: ${entry.id}]\n${fromDisplay}: ${entry.content}` }],
+				details: undefined,
 			};
 		},
 	});
@@ -927,7 +929,7 @@ export default function (pi: ExtensionAPI) {
 			if (!connection.ws || connection.ws.readyState !== WebSocket.OPEN) throw new Error(`Pi2Pi: not connected to broker for ${roomLabel(connection)}`);
 			incomingQueue.delete(params.id);
 			connection.ws.send(JSON.stringify({ type: "reply", id: incoming.id, content: params.content }));
-			return { content: [{ type: "text", text: `Reply sent to ${incoming.from} in ${roomLabel(connection)}.` }] };
+			return { content: [{ type: "text", text: `Reply sent to ${incoming.from} in ${roomLabel(connection)}.` }], details: undefined };
 		},
 	});
 
@@ -946,7 +948,7 @@ export default function (pi: ExtensionAPI) {
 				? connection.roster.map(member => `${member.displayName}${member.role ? ` (${member.role})` : ""}`)
 				: connection.onlineAgents;
 			const text = members.length ? `Agents in ${roomLabel(connection)}: ${members.join(", ")}` : `No agents connected in ${roomLabel(connection)}`;
-			return { content: [{ type: "text", text }] };
+			return { content: [{ type: "text", text }], details: undefined };
 		},
 	});
 
@@ -970,7 +972,7 @@ export default function (pi: ExtensionAPI) {
 					lastToolCallAt: null, lastToolCallName: null,
 					toolCallsSinceLastMessage: 0,
 					warning: "Agent not connected or not in roster",
-				}, null, 2) }] };
+				}, null, 2) }], details: undefined };
 			}
 			const report = {
 				agent: member.name,
@@ -981,7 +983,7 @@ export default function (pi: ExtensionAPI) {
 				lastToolCallName: member.lastToolCallName,
 				toolCallsSinceLastMessage: member.toolCallsSinceLastMessage,
 			};
-			return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }] };
+			return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }], details: undefined };
 		},
 	});
 
@@ -1119,7 +1121,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			incomingQueue.delete(id);
 			connection.ws.send(JSON.stringify({ type: "reply", id: incoming.id, content }));
-			ctx.ui.notify(`Reply sent to ${incoming.from} in ${roomLabel(connection)}.`, "success");
+			ctx.ui.notify(`Reply sent to ${incoming.from} in ${roomLabel(connection)}.`);
 		},
 	});
 

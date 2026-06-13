@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
 import { tmpdir } from "os";
@@ -52,7 +52,7 @@ describe("resolveDefaultConfigPath via loadConfig", () => {
 
 		process.chdir(dir);
 		const loaded = loadConfig(); // no explicit path
-		expect(loaded.configPath).toBe(resolve(localConfig));
+		expect(loaded.configPath).toBe(realpathSync(resolve(localConfig)));
 
 		process.chdir(savedCwd);
 		rmSync(dir, { recursive: true, force: true });
@@ -114,11 +114,11 @@ describe("pit init", () => {
 		// Config should have absolute paths pointing into fakeHome/.pit/
 		const cfg = parse(readFileSync(configFile, "utf8")) as Record<string, unknown>;
 		const state = cfg.state as Record<string, string>;
-		const roles = cfg.roles as Record<string, Record<string, unknown>>;
+		const roles = (cfg as { roles: unknown }).roles;
 		expect(state.reposRoot).toBe(join(pitDir, "repos"));
 		expect(state.workspacesRoot).toBe(join(pitDir, "workspaces"));
 		expect(state.runtimeRoot).toBe(join(pitDir, "runtime"));
-		expect(roles).toEqual(builtInDefaultRoles());
+		expect(roles).toEqual(builtInDefaultRoles() as unknown);
 
 		rmSync(fakeHome, { recursive: true, force: true });
 	});
@@ -143,11 +143,11 @@ describe("pit init", () => {
 
 		const cfg = parse(readFileSync(customConfig, "utf8")) as Record<string, unknown>;
 		const state = cfg.state as Record<string, string>;
-		const roles = cfg.roles as Record<string, Record<string, unknown>>;
+		const roles = (cfg as { roles: unknown }).roles;
 		expect(state.reposRoot).toBe(join(customHome, "repos"));
 		expect(state.workspacesRoot).toBe(join(customHome, "workspaces"));
 		expect(state.runtimeRoot).toBe(join(customHome, "runtime"));
-		expect(roles).toEqual(builtInDefaultRoles());
+		expect(roles).toEqual(builtInDefaultRoles() as unknown);
 
 		rmSync(fakeHome, { recursive: true, force: true });
 	});

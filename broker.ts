@@ -81,8 +81,8 @@ function roomMembers(room: string): string[] {
 	return out;
 }
 
-function roomRoster(room: string): Array<{ name: string; displayName: string; role: string | null }> {
-	const out: Array<{ name: string; displayName: string; role: string | null }> = [];
+function roomRoster(room: string): Array<{ name: string; displayName: string; role: string | null; lastMessageReceivedAt: string | null; lastMessageSentAt: string | null; lastToolCallAt: string | null; lastToolCallName: string | null; toolCallsSinceLastMessage: number }> {
+	const out: Array<{ name: string; displayName: string; role: string | null; lastMessageReceivedAt: string | null; lastMessageSentAt: string | null; lastToolCallAt: string | null; lastToolCallName: string | null; toolCallsSinceLastMessage: number }> = [];
 	for (const ws of agents.values()) {
 		if (ws.data.room === room && ws.data.name) {
 			out.push({

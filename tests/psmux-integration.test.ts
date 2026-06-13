@@ -35,8 +35,12 @@ function run(args: string[]): { ok: boolean; stdout: string; stderr: string } {
 }
 
 function psmuxAvailable(): boolean {
-	const r = Bun.spawnSync([PSMUX, "-V"], { env: ENV, stdout: "pipe", stderr: "pipe" });
-	return r.exitCode === 0;
+	try {
+		const r = Bun.spawnSync([PSMUX, "-V"], { env: ENV, stdout: "pipe", stderr: "pipe" });
+		return r.exitCode === 0;
+	} catch {
+		return false;
+	}
 }
 
 interface PaneInfo {

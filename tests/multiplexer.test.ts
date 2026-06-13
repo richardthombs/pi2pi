@@ -5,8 +5,12 @@ import { tmpdir } from "os";
 import type { LoadedConfig } from "../config-store";
 import { defaultConfig } from "../config-store";
 import { buildTmuxLikeCommandSequence, cmuxLayoutForCommands, selectMultiplexerKind } from "../multiplexer";
-import embeddedBrokerSource from "../broker.ts" with { type: "text" };
-import embeddedBrokerUiSource from "../broker-ui.ts" with { type: "text" };
+// @ts-expect-error — Bun-specific import assertion; tsc sees the default export as a module, not a string
+import _embeddedBrokerSource from "../broker.ts" with { type: "text" };
+const embeddedBrokerSource = _embeddedBrokerSource as unknown as string;
+// @ts-expect-error — Bun-specific import assertion; tsc sees the default export as a module, not a string
+import _embeddedBrokerUiSource from "../broker-ui.ts" with { type: "text" };
+const embeddedBrokerUiSource = _embeddedBrokerUiSource as unknown as string;
 
 function git(args: string[], cwd?: string): string {
 	const proc = Bun.spawnSync(["git", ...args], {
@@ -141,6 +145,20 @@ describe("tmux-like command generation", () => {
 		expect(commandText).toContain("Clear-Host; & 'pi'");
 		expect(commands.some(command => command[1] === "select-pane" && command.includes("-T") && command.includes("Alice"))).toBe(true);
 		expect(commands.some(command => command[1] === "select-pane" && command.includes("-T") && command.includes("Bob"))).toBe(true);
+	});
+
+	// Live PowerShell execution — only runs on Windows where powershell.exe is present
+	const powershellPath = require("path").join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+	let powershellAvailable = false;
+	try { powershellAvailable = Bun.spawnSync([powershellPath, "-NoProfile", "-Command", "exit 0"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0; } catch { /* not on PATH */ }
+	const maybeTestPs = powershellAvailable ? test : test.skip;
+	if (!powershellAvailable) console.log("  (skipping live PowerShell test — powershell.exe not found)");
+
+	maybeTestPs("psmux command executes correctly on live PowerShell (Windows only)", () => {
+		loaded.config.roles.manager.systemPrompt = "Leader's base prompt with \"quotes\".\nSecond line.";
+		const commands = buildTmuxLikeCommandSequence(loaded, "psmux", "psmux");
+		const engineeringWindow = commands.find(command => command[1] === "new-window" && command.includes("engineering"));
+		const commandText = engineeringWindow![engineeringWindow!.length - 1];
 
 		const fakePiPath = join(root, "fake-pi.ps1");
 		const capturePath = join(root, "captured-args.json");
@@ -150,8 +168,7 @@ describe("tmux-like command generation", () => {
 			`$items | ConvertTo-Json -Compress | Set-Content -LiteralPath '${capturePath.replace(/'/g, "''")}'`,
 		].join("\n"), "utf8");
 
-		const runnableCommand = commandText.replace("& 'pi'", `& '${fakePiPath.replace(/'/g, "''")}'`);
-		const powershellPath = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+		const runnableCommand = commandText.replace("& 'pi'", `& '${fakePiPath.replace(/'/g, "''")}'\n`);
 		const result = Bun.spawnSync([powershellPath, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", runnableCommand], {
 			stdout: "pipe",
 			stderr: "pipe",

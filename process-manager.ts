@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import embeddedPi2PiExtensionSource from "./pi2pi.ts" with { type: "text" };
+import _embeddedPi2PiExtensionSource from "./pi2pi.ts" with { type: "text" };
+const embeddedPi2PiExtensionSource = _embeddedPi2PiExtensionSource as unknown as string;
 import type { LoadedConfig, MemberDefinition, RoleDefinition, WorkspaceDefinition } from "./config-store";
 import {
 	brokerUrlForWorkspace,
