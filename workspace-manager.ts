@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { LoadedConfig } from "./config-store";
 import { assertSimpleKey, ensureStateDirectories } from "./config-store";
@@ -28,6 +28,14 @@ function runGit(args: string[], cwd?: string): string {
 function localRepoPath(loaded: LoadedConfig, repoName: string): string {
 	const { reposRoot } = ensureStateDirectories(loaded);
 	return join(reposRoot, repoName);
+}
+
+export function workspaceRolesPath(loaded: LoadedConfig, workspaceName: string): string {
+	return join(workspaceRootPath(loaded, workspaceName), "roles");
+}
+
+export function workspaceRoleFilePath(loaded: LoadedConfig, workspaceName: string, roleName: string): string {
+	return join(workspaceRolesPath(loaded, workspaceName), `${roleName}.md`);
 }
 
 export function workspaceRootPath(loaded: LoadedConfig, workspaceName: string): string {
@@ -86,6 +94,19 @@ export function ensureWorkspaceRepoWorktree(loaded: LoadedConfig, workspaceName:
 	return worktreePath;
 }
 
+function ensureWorkspaceRoles(loaded: LoadedConfig, workspaceName: string): void {
+	const workspace = loaded.config.workspaces[workspaceName];
+	if (!workspace) return;
+	const rolesDir = workspaceRolesPath(loaded, workspaceName);
+	mkdirSync(rolesDir, { recursive: true });
+	const usedRoles = new Set(workspace.members.map(m => m.role));
+	for (const roleName of usedRoles) {
+		const role = loaded.config.roles[roleName];
+		if (!role) continue;
+		writeFileSync(join(rolesDir, `${roleName}.md`), role.systemPrompt, "utf8");
+	}
+}
+
 export function ensureWorkspaceLayout(loaded: LoadedConfig, workspaceName: string): WorkspaceLayout {
 	assertSimpleKey("workspace name", workspaceName);
 	const workspace = loaded.config.workspaces[workspaceName];
@@ -93,6 +114,7 @@ export function ensureWorkspaceLayout(loaded: LoadedConfig, workspaceName: strin
 
 	const workspaceRoot = workspaceRootPath(loaded, workspaceName);
 	mkdirSync(workspaceRoot, { recursive: true });
+	ensureWorkspaceRoles(loaded, workspaceName);
 
 	const repoPaths: Record<string, string> = {};
 	for (const repoName of workspace.repositories) {

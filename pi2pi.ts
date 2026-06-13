@@ -10,6 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "fs";
 
 const BROKER_DEFAULT = "ws://localhost:7331";
 const RECONNECT_DELAY_MS = 2000;
@@ -97,6 +98,14 @@ export default function (pi: ExtensionAPI) {
 		description: `Broker WebSocket URL (default: ${BROKER_DEFAULT})`,
 		type: "string",
 	});
+	pi.registerFlag("prompt-file", {
+		description: "Path to a markdown file containing the agent's role system prompt",
+		type: "string",
+	});
+	pi.registerFlag("workspace", {
+		description: "Workspace name, used for {{team}} and {{workspace}} interpolation in the role prompt file",
+		type: "string",
+	});
 
 	// ── State ────────────────────────────────────────────────────────────────
 	let agentName: string | null = null;
@@ -104,6 +113,7 @@ export default function (pi: ExtensionAPI) {
 	let defaultRoomAlias: string | null = null;
 	let displayName: string | null = null;
 	let agentRole: string | null = null;
+	let rolePromptContent: string | null = null;
 	const roomDisplayNames = new Map<string, string>();
 	let shutdownRequested = false;
 
@@ -653,6 +663,25 @@ export default function (pi: ExtensionAPI) {
 		displayName = ((pi.getFlag("display-name") as string | undefined)?.trim()) || agentName;
 		agentRole = ((pi.getFlag("agent-role") as string | undefined)?.trim()) || null;
 
+		// Load the role prompt file if provided
+		const promptFilePath = (pi.getFlag("prompt-file") as string | undefined)?.trim();
+		const workspaceName = (pi.getFlag("workspace") as string | undefined)?.trim() || "";
+		rolePromptContent = null;
+		if (promptFilePath) {
+			try {
+				if (existsSync(promptFilePath)) {
+					const raw = readFileSync(promptFilePath, "utf8");
+					rolePromptContent = raw
+						.replace(/\{\{name\}\}/g, displayName ?? agentName ?? "")
+						.replace(/\{\{team\}\}/g, workspaceName)
+						.replace(/\{\{workspace\}\}/g, workspaceName)
+						.replace(/\{\{handle\}\}/g, agentName ?? "");
+				}
+			} catch {
+				// Silently ignore file read errors; prompt falls back to --append-system-prompt only
+			}
+		}
+
 		try {
 			const parsed = parseRoomBindings();
 			configureRooms(parsed.bindings, parsed.defaultAlias);
@@ -678,6 +707,7 @@ export default function (pi: ExtensionAPI) {
 		agentName = null;
 		displayName = null;
 		agentRole = null;
+		rolePromptContent = null;
 		roomDisplayNames.clear();
 		defaultRoomAlias = null;
 		incomingQueue.clear();
@@ -699,6 +729,11 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		roomConnections.clear();
+	});
+
+	pi.on("before_agent_start", (event) => {
+		if (!rolePromptContent) return;
+		return { systemPrompt: rolePromptContent + "\n\n" + event.systemPrompt };
 	});
 
 	pi.on("agent_start", async (_event, ctx) => {

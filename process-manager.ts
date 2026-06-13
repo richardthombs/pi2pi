@@ -11,7 +11,7 @@ import {
 	overlordPrompt,
 	workspaceRoomName,
 } from "./config-store";
-import { ensureWorkspaceLayout, workspaceRootPath } from "./workspace-manager";
+import { ensureWorkspaceLayout, workspaceRoleFilePath, workspaceRootPath } from "./workspace-manager";
 
 interface RuntimeMemberState {
 	pid: number;
@@ -135,11 +135,10 @@ function workspaceAgentCwd(workspaceRoot: string, repoNames: string[]): string {
 	return repoNames.length === 1 ? join(workspaceRoot, repoNames[0]) : workspaceRoot;
 }
 
-function buildPrompt(
+function buildDynamicContext(
 	workspaceName: string,
 	workspace: WorkspaceDefinition,
 	member: MemberDefinition,
-	role: RoleDefinition,
 	handle: string,
 	repos: string[],
 	bindings: RoomBinding[],
@@ -155,36 +154,35 @@ function buildPrompt(
 		leadershipRoom,
 	};
 
-	let systemPrompt = interpolate(role.systemPrompt, vars);
 	const repoSummary = repos.length === 0
 		? "\n\nYour workspace currently has no repositories."
 		: repos.length === 1
 			? `\n\nYour cwd is the ${repos[0]} worktree for this workspace.`
 			: `\n\nWorkspace repositories available at your cwd root: ${repos.join(", ")}.`;
-	systemPrompt += repoSummary;
 
 	const teamRoster = workspace.members.map(m => `${m.name} (${m.role})`).join(", ");
-	const bindingSummary = bindings.map(binding => `${binding.alias}=#${binding.room}`).join(", ");
+	const bindingSummary = bindings.map(b => `${b.alias}=#${b.room}`).join(", ");
 
+	let context = repoSummary;
 	if (workspace.leader === member.name) {
-		systemPrompt += `\n\nYou are the leader of the ${workspaceName} team.` +
+		context += `\n\nYou are the leader of the ${workspaceName} team.` +
 			` Your agent handle is ${handle}.` +
 			` You are connected to rooms ${bindingSummary}.` +
 			` In the leadership room you appear as "${leadershipDisplayName(workspaceName)}" because you represent the whole team there.` +
 			` Receive top-level work in the leadership room, delegate into the team room, and return final synthesised results back upward.` +
 			` Your mixed-specialty team members are: ${teamRoster}.`;
 	} else {
-		systemPrompt += `\n\nYou are part of the ${workspaceName} mixed-specialty team.` +
+		context += `\n\nYou are part of the ${workspaceName} mixed-specialty team.` +
 			` Your leader is ${leaderHandle(workspaceName)}.` +
 			` You are connected to rooms ${bindingSummary}.` +
 			` Accept delegation from your team leader and collaborate with your specialist teammates in the team room.`;
 	}
 
 	if (member.systemPrompt) {
-		systemPrompt += "\n\n" + interpolate(member.systemPrompt, vars);
+		context += "\n\n" + interpolate(member.systemPrompt, vars);
 	}
 
-	return systemPrompt;
+	return context;
 }
 
 export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: string): LaunchSpec[] {
@@ -205,7 +203,8 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 		const handle = isLeader ? leaderHandle(workspaceName) : member.name;
 		const roomBindings = roomBindingsForMember(loaded, workspaceName, workspace, member);
 		const roomBindingArg = roomBindings.map(binding => `${binding.alias}=${binding.room}`).join(",");
-		const systemPrompt = buildPrompt(workspaceName, workspace, member, role, handle, repoList, roomBindings, leadershipRoom);
+		const dynamicContext = buildDynamicContext(workspaceName, workspace, member, handle, repoList, roomBindings, leadershipRoom);
+		const promptFilePath = workspaceRoleFilePath(loaded, workspaceName, member.role);
 		const model = member.model ?? role.model;
 		const sessionDir = agentSessionDir(loaded, workspaceName, member.name);
 		const sessionName = agentSessionName(member.name, member.role, workspaceName);
@@ -223,7 +222,9 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 			"--rooms", roomBindingArg,
 			"--default-room", "team",
 			"--model", model,
-			"--append-system-prompt", systemPrompt,
+			"--prompt-file", promptFilePath,
+			"--workspace", workspaceName,
+			"--append-system-prompt", dynamicContext,
 			"--broker", brokerUrl,
 		];
 
