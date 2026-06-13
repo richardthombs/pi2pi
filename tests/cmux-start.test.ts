@@ -118,10 +118,16 @@ describe("cmux orchestration start", () => {
 		expect(existsSync(join(scriptsDir, "alpha-Alice.sh"))).toBe(true);
 		expect(existsSync(join(scriptsDir, "alpha-Bob.sh"))).toBe(true);
 
-		// Agent script contains full system prompt
+		// Agent script uses file-based role prompt + dynamic context
 		const aliceContent = readFileSync(join(scriptsDir, "alpha-Alice.sh"), "utf8");
 		expect(aliceContent).toContain("--append-system-prompt");
-		expect(aliceContent).toContain("You are Alice");
+		// Role prompt is delivered via a runtime prompt file, not inline
+		expect(aliceContent).toContain("prompts/alpha/Alice.md");
+		// The runtime prompt file must exist and contain the interpolated role text
+		const runtimePromptsDir = join(root, ".pi", "runtime", "prompts", "alpha");
+		expect(existsSync(join(runtimePromptsDir, "Alice.md"))).toBe(true);
+		const alicePrompt = readFileSync(join(runtimePromptsDir, "Alice.md"), "utf8");
+		expect(alicePrompt).toContain("You are Alice");
 	});
 
 	test("workspace plan contains only short script paths, not inline commands", () => {

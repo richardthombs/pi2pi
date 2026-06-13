@@ -185,6 +185,22 @@ function buildDynamicContext(
 	return context;
 }
 
+function agentRolePromptFile(loaded: LoadedConfig, workspaceName: string, memberName: string): string {
+	const { runtimeRoot } = ensureStateDirectories(loaded);
+	const dir = join(runtimeRoot, "prompts", workspaceName);
+	mkdirSync(dir, { recursive: true });
+	return join(dir, `${memberName}.md`);
+}
+
+function writeAgentRolePrompt(loaded: LoadedConfig, workspaceName: string, member: MemberDefinition, role: RoleDefinition, vars: Record<string, string>): string {
+	const roleFilePath = workspaceRoleFilePath(loaded, workspaceName, member.role);
+	const template = existsSync(roleFilePath) ? readFileSync(roleFilePath, "utf8") : role.systemPrompt;
+	const content = template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
+	const destPath = agentRolePromptFile(loaded, workspaceName, member.name);
+	writeFileSync(destPath, content, "utf8");
+	return destPath;
+}
+
 export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: string): LaunchSpec[] {
 	const workspace = loaded.config.workspaces[workspaceName];
 	if (!workspace) throw new Error(`Unknown workspace: ${workspaceName}`);
@@ -203,8 +219,17 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 		const handle = isLeader ? leaderHandle(workspaceName) : member.name;
 		const roomBindings = roomBindingsForMember(loaded, workspaceName, workspace, member);
 		const roomBindingArg = roomBindings.map(binding => `${binding.alias}=${binding.room}`).join(",");
+		const vars = {
+			name: member.name,
+			team: workspaceName,
+			workspace: workspaceName,
+			handle,
+			leaderHandle: leaderHandle(workspaceName),
+			teamRoom: workspaceRoomName(workspaceName, workspace),
+			leadershipRoom,
+		};
+		const rolePromptFile = writeAgentRolePrompt(loaded, workspaceName, member, role, vars);
 		const dynamicContext = buildDynamicContext(workspaceName, workspace, member, handle, repoList, roomBindings, leadershipRoom);
-		const promptFilePath = workspaceRoleFilePath(loaded, workspaceName, member.role);
 		const model = member.model ?? role.model;
 		const sessionDir = agentSessionDir(loaded, workspaceName, member.name);
 		const sessionName = agentSessionName(member.name, member.role, workspaceName);
@@ -222,8 +247,7 @@ export function createWorkspaceLaunchSpecs(loaded: LoadedConfig, workspaceName: 
 			"--rooms", roomBindingArg,
 			"--default-room", "team",
 			"--model", model,
-			"--prompt-file", promptFilePath,
-			"--workspace", workspaceName,
+			"--append-system-prompt", rolePromptFile,
 			"--append-system-prompt", dynamicContext,
 			"--broker", brokerUrl,
 		];
