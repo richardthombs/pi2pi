@@ -454,8 +454,10 @@ function writeCmuxLaunchScript(loaded: LoadedConfig, key: string, shellCommand: 
  * pass to `cmux new-workspace`. Exported so tests can inspect outputs without
  * needing a real cmux installation.
  */
-export function buildCmuxWorkspaces(loaded: LoadedConfig): Array<{ name: string; cwd: string; commands: Array<{ cwd: string; command: string; title?: string; gitCeilingDir?: string }> }> {
+export function buildCmuxWorkspaces(loaded: LoadedConfig, writeScripts = true): Array<{ name: string; cwd: string; commands: Array<{ cwd: string; command: string; title?: string; gitCeilingDir?: string }> }> {
 	function script(key: string, shellCommand: string): string {
+		// In dry-run / debug mode callers pass writeScripts=false to avoid side-effects.
+		if (!writeScripts) return shellCommand;
 		return writeCmuxLaunchScript(loaded, key, shellCommand);
 	}
 	const leadershipCommand = script("orchestration-overlord", buildLaunchCommand(loaded, "overlord", buildOverlordArgs(loaded), false));
@@ -477,7 +479,25 @@ export function buildCmuxWorkspaces(loaded: LoadedConfig): Array<{ name: string;
 }
 
 function runCmuxStart(loaded: LoadedConfig, mux: SelectedMultiplexer, debug = false): void {
-	const workspaces = buildCmuxWorkspaces(loaded);
+	const workspaces = buildCmuxWorkspaces(loaded, !debug);
+
+	// Guard: bail if any planned workspace already exists in the current window,
+	// mirroring the tmux has-session check. Prevents duplicate workspace creation.
+	if (!debug) {
+		const listOutput = runOrThrow([mux.executable, "list-workspaces"]);
+		const existingNames = new Set(
+			listOutput.split("\n")
+				.map(line => line.match(/workspace:\d+\s+(.+)/)?.[1]?.trim())
+				.filter((n): n is string => !!n)
+		);
+		const conflicts = workspaces.map(w => w.name).filter(n => existingNames.has(n));
+		if (conflicts.length > 0) {
+			throw new Error(
+				`Orchestration workspace(s) already exist: ${conflicts.join(", ")}. ` +
+				`Close them in cmux manually before running orchestration start again.`
+			);
+		}
+	}
 
 	const exec = (command: string[]): string => {
 		if (debug) { debugEcho(command); return ""; }

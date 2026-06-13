@@ -23,12 +23,14 @@ import { ensureWorkspaceLayout } from "./workspace-manager";
 
 interface ParsedCli {
 	configPath?: string;
+	debug: boolean;
 	args: string[];
 }
 
 function parseCli(argv: string[]): ParsedCli {
 	const args: string[] = [];
 	let configPath: string | undefined;
+	let debug = false;
 
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === "--config") {
@@ -36,10 +38,14 @@ function parseCli(argv: string[]): ParsedCli {
 			i += 1;
 			continue;
 		}
+		if (argv[i] === "--debug") {
+			debug = true;
+			continue;
+		}
 		args.push(argv[i]);
 	}
 
-	return { configPath, args };
+	return { configPath, debug, args };
 }
 
 function usage(): never {
@@ -190,7 +196,7 @@ function handleRoles(loaded: LoadedConfig, args: string[]): void {
 	}
 }
 
-function handleOrchestration(loaded: LoadedConfig, args: string[]): void {
+function handleOrchestration(loaded: LoadedConfig, args: string[], debug = false): void {
 	if (args[0] === "show") {
 		console.log(`Broker: ${loaded.config.orchestration.broker}`);
 		console.log(`Leadership room: ${leadershipRoomName(loaded.config)}`);
@@ -226,13 +232,9 @@ function handleOrchestration(loaded: LoadedConfig, args: string[]): void {
 	}
 
 	if (args[0] === "start") {
-		const dryRun = args.includes("--debug");
-		const mux = startOrchestration(loaded, { dryRun });
-		if (dryRun) {
-			console.log(`# ${mux.kind} — commands shown above would be executed (--debug mode, nothing launched)`);
-		} else {
-			console.log(`Started orchestration using ${mux.kind}.`);
-		}
+		if (debug) console.log("[debug] The following cmux commands would be executed:");
+		const mux = startOrchestration(loaded, { debug });
+		if (!debug) console.log(`Started orchestration using ${mux.kind}.`);
 		return;
 	}
 
@@ -394,20 +396,20 @@ try {
 		handleInit(parsed.configPath);
 	} else {
 		const loaded = loadConfig(parsed.configPath);
-		_dispatchCommand(entity, loaded, args);
+		_dispatchCommand(entity, loaded, args, parsed.debug);
 	}
 } catch (error) {
 	console.error(error instanceof Error ? error.message : String(error));
 	process.exit(1);
 }
 
-function _dispatchCommand(entity: string, loaded: ReturnType<typeof loadConfig>, args: string[]): void {
+function _dispatchCommand(entity: string, loaded: ReturnType<typeof loadConfig>, args: string[], debug = false): void {
 	if (entity === "repos") {
 		handleRepos(loaded, args);
 	} else if (entity === "roles") {
 		handleRoles(loaded, args);
 	} else if (entity === "orchestration") {
-		handleOrchestration(loaded, args);
+		handleOrchestration(loaded, args, debug);
 	} else if (entity === "overlord") {
 		handleOverlord(loaded, args);
 	} else if (entity === "workspace") {
