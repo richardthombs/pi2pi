@@ -22,7 +22,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Database, type SQLQueryBindings } from "bun:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
@@ -120,7 +120,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ── Runtime state ─────────────────────────────────────────────────────────
-	let db: Database | null = null;
+	let db: DatabaseSync | null = null;
 	let currentSessionId: string | null = null;
 	let currentTaskId: string | null = null;
 	let currentTurnId: string | null = null;
@@ -147,10 +147,10 @@ export default function (pi: ExtensionAPI) {
 		return join(home, ".pi", "agent", "telemetry", "telemetry.db");
 	}
 
-	function openDb(): Database {
+	function openDb(): DatabaseSync {
 		const path = dbPath();
 		mkdirSync(dirname(path), { recursive: true });
-		const database = new Database(path, { create: true });
+		const database = new DatabaseSync(path);
 		database.exec("PRAGMA journal_mode=WAL;");
 		database.exec(SCHEMA);
 		return database;
@@ -159,7 +159,7 @@ export default function (pi: ExtensionAPI) {
 	function applyAnnotation(taskId: string, annotation: Record<string, string>): void {
 		if (!db) return;
 		const fields: string[] = [];
-		const values: SQLQueryBindings[] = [];
+		const values: unknown[] = [];
 		for (const [k, v] of Object.entries(annotation)) {
 			if (["pi2pi_message_id", "from_agent", "overlord_request", "role", "team"].includes(k)) {
 				fields.push(`${k} = ?`);
@@ -168,7 +168,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (fields.length === 0) return;
 		values.push(taskId);
-		db.run(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`, values);
+		db.prepare(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`).run(...values);
 	}
 
 	// ── Inter-extension event bus ─────────────────────────────────────────────
@@ -198,16 +198,15 @@ export default function (pi: ExtensionAPI) {
 		const sessionId = newId();
 		currentSessionId = sessionId;
 
-		db.run(
+		db.prepare(
 			`INSERT INTO sessions (id, agent_name, session_label, model, provider, cwd, started_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			[sessionId, agentName, sessionLabel, model, provider, ctx.cwd ?? null, now()],
-		);
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`
+		).run(sessionId, agentName, sessionLabel, model, provider, ctx.cwd ?? null, now());
 	});
 
 	pi.on("session_shutdown", async () => {
 		if (db && currentSessionId) {
-			db.run(`UPDATE sessions SET ended_at = ? WHERE id = ?`, [now(), currentSessionId]);
+			db.prepare(`UPDATE sessions SET ended_at = ? WHERE id = ?`).run(now(), currentSessionId);
 		}
 		db?.close();
 		db = null;
@@ -222,10 +221,9 @@ export default function (pi: ExtensionAPI) {
 		currentModel = event.model.name || event.model.id;
 		currentProvider = event.model.provider ?? null;
 		if (db && currentSessionId) {
-			db.run(
-				`UPDATE sessions SET model = ?, provider = ? WHERE id = ?`,
-				[currentModel, currentProvider, currentSessionId],
-			);
+			db.prepare(
+				`UPDATE sessions SET model = ?, provider = ? WHERE id = ?`
+			).run(currentModel, currentProvider, currentSessionId);
 		}
 	});
 
@@ -236,10 +234,9 @@ export default function (pi: ExtensionAPI) {
 		const taskId = newId();
 		currentTaskId = taskId;
 
-		db.run(
-			`INSERT INTO tasks (id, session_id, started_at) VALUES (?, ?, ?)`,
-			[taskId, currentSessionId, now()],
-		);
+		db.prepare(
+			`INSERT INTO tasks (id, session_id, started_at) VALUES (?, ?, ?)`
+		).run(taskId, currentSessionId, now());
 
 		// Apply any decoration that arrived before this turn started
 		if (pendingAnnotation) {
@@ -250,7 +247,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_end", async () => {
 		if (!db || !currentTaskId) return;
-		db.run(`UPDATE tasks SET ended_at = ? WHERE id = ?`, [now(), currentTaskId]);
+		db.prepare(`UPDATE tasks SET ended_at = ? WHERE id = ?`).run(now(), currentTaskId);
 		currentTaskId = null;
 		currentTurnId = null;
 	});
@@ -262,11 +259,10 @@ export default function (pi: ExtensionAPI) {
 		const turnId = newId();
 		currentTurnId = turnId;
 
-		db.run(
+		db.prepare(
 			`INSERT INTO turns (id, session_id, task_id, turn_index, started_at, model, provider)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			[turnId, currentSessionId, currentTaskId, event.turnIndex, now(), currentModel, currentProvider],
-		);
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`
+		).run(turnId, currentSessionId, currentTaskId, event.turnIndex, now(), currentModel, currentProvider);
 	});
 
 	// ── Assistant message capture (tokens + CoT + text) ──────────────────────
@@ -290,7 +286,7 @@ export default function (pi: ExtensionAPI) {
 		// Update turn with token usage and stop reason
 		const usage = msg.usage ?? {};
 		const cost = usage.cost ?? {};
-		db.run(
+		db.prepare(
 			`UPDATE turns SET
 				ended_at        = ?,
 				tokens_input    = ?,
@@ -302,20 +298,19 @@ export default function (pi: ExtensionAPI) {
 				cost_output     = ?,
 				cost_total      = ?,
 				stop_reason     = ?
-			 WHERE id = ?`,
-			[
-				now(),
-				usage.input ?? null,
-				usage.output ?? null,
-				usage.cacheRead ?? null,
-				usage.cacheWrite ?? null,
-				usage.totalTokens ?? null,
-				cost.input ?? null,
-				cost.output ?? null,
-				cost.total ?? null,
-				msg.stopReason ?? null,
-				currentTurnId,
-			],
+			 WHERE id = ?`
+		).run(
+			now(),
+			usage.input ?? null,
+			usage.output ?? null,
+			usage.cacheRead ?? null,
+			usage.cacheWrite ?? null,
+			usage.totalTokens ?? null,
+			cost.input ?? null,
+			cost.output ?? null,
+			cost.total ?? null,
+			msg.stopReason ?? null,
+			currentTurnId,
 		);
 
 		// Extract content blocks
@@ -325,17 +320,15 @@ export default function (pi: ExtensionAPI) {
 
 		for (const block of content) {
 			if (block.type === "thinking" && block.thinking) {
-				db.run(
+				db.prepare(
 					`INSERT INTO thinking_blocks (id, turn_id, session_id, sequence, content)
-					 VALUES (?, ?, ?, ?, ?)`,
-					[newId(), currentTurnId, currentSessionId, thinkSeq++, block.thinking],
-				);
+					 VALUES (?, ?, ?, ?, ?)`
+				).run(newId(), currentTurnId, currentSessionId, thinkSeq++, block.thinking);
 			} else if (block.type === "text" && block.text?.trim()) {
-				db.run(
+				db.prepare(
 					`INSERT INTO assistant_text (id, turn_id, session_id, sequence, content)
-					 VALUES (?, ?, ?, ?, ?)`,
-					[newId(), currentTurnId, currentSessionId, textSeq++, block.text],
-				);
+					 VALUES (?, ?, ?, ?, ?)`
+				).run(newId(), currentTurnId, currentSessionId, textSeq++, block.text);
 			}
 		}
 	});
@@ -353,19 +346,18 @@ export default function (pi: ExtensionAPI) {
 			argsJson = null;
 		}
 
-		db.run(
+		db.prepare(
 			`INSERT INTO tool_calls (id, turn_id, session_id, task_id, tool_name, called_at, args_json, is_error)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				newId(),
-				currentTurnId ?? null,
-				currentSessionId,
-				currentTaskId ?? null,
-				event.toolName,
-				now(),
-				argsJson,
-				event.isError ? 1 : 0,
-			],
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+		).run(
+			newId(),
+			currentTurnId ?? null,
+			currentSessionId,
+			currentTaskId ?? null,
+			event.toolName,
+			now(),
+			argsJson,
+			event.isError ? 1 : 0,
 		);
 	});
 
@@ -424,7 +416,7 @@ Useful queries:
 
 			let rows: unknown[];
 			try {
-				rows = db.query(sql).all();
+				rows = db.prepare(sql).all();
 			} catch (err) {
 				throw new Error(`SQL error: ${err instanceof Error ? err.message : String(err)}`);
 			}
@@ -461,7 +453,7 @@ Useful queries:
 
 			if (!sub || sub === "tasks") {
 				// Last 10 tasks with token totals
-				const rows = db.query<{
+				type TaskRow = {
 					id: string;
 					agent_name: string | null;
 					overlord_request: string | null;
@@ -472,7 +464,8 @@ Useful queries:
 					turns: number;
 					tokens: number | null;
 					cost: number | null;
-				}, []>(`
+				};
+				const rows = db.prepare(`
 					SELECT
 						t.id,
 						s.agent_name,
@@ -490,7 +483,7 @@ Useful queries:
 					GROUP BY t.id
 					ORDER BY t.started_at DESC
 					LIMIT 10
-				`).all();
+				`).all() as TaskRow[];
 
 				if (rows.length === 0) {
 					ctx.ui.notify("No tasks recorded yet", "info");
@@ -520,7 +513,7 @@ Useful queries:
 				const taskId = sub.slice(5).trim();
 				const partial = taskId.length < 36;
 
-				const task = db.query<{
+				type TaskDetail = {
 					id: string;
 					agent_name: string | null;
 					overlord_request: string | null;
@@ -529,29 +522,31 @@ Useful queries:
 					from_agent: string | null;
 					started_at: string;
 					ended_at: string | null;
-				}, [string]>(`
+				};
+				const task = db.prepare(`
 					SELECT t.*, s.agent_name
 					FROM tasks t JOIN sessions s ON t.session_id = s.id
 					WHERE t.id ${partial ? "LIKE ?" : "= ?"}
 					LIMIT 1
-				`).get(partial ? `${taskId}%` : taskId);
+				`).get(partial ? `${taskId}%` : taskId) as TaskDetail | null;
 
 				if (!task) {
 					ctx.ui.notify(`No task found for id: ${taskId}`, "warning");
 					return;
 				}
 
-				const turns = db.query<{
+				type TurnRow = {
 					id: string;
 					turn_index: number;
 					tokens_total: number | null;
 					cost_total: number | null;
 					stop_reason: string | null;
 					started_at: string;
-				}, [string]>(
+				};
+				const turns = db.prepare(
 					`SELECT id, turn_index, tokens_total, cost_total, stop_reason, started_at
 					 FROM turns WHERE task_id = ? ORDER BY turn_index`,
-				).all(task.id);
+				).all(task.id) as TurnRow[];
 
 				const lines: string[] = [
 					`── Task ${task.id.slice(0, 8)} ──`,
@@ -563,33 +558,36 @@ Useful queries:
 					``,
 				];
 
+				type ContentRow = { sequence: number; content: string };
+				type ToolRow = { tool_name: string; called_at: string; is_error: number };
+
 				for (const turn of turns) {
 					lines.push(
 						`  Turn ${turn.turn_index}  ${turn.tokens_total?.toLocaleString() ?? "—"} tok  ` +
 						`$${(turn.cost_total ?? 0).toFixed(4)}  stop=${turn.stop_reason ?? "—"}`,
 					);
 
-					const thinking = db.query<{ sequence: number; content: string }, [string]>(
+					const thinking = db.prepare(
 						`SELECT sequence, content FROM thinking_blocks WHERE turn_id = ? ORDER BY sequence`,
-					).all(turn.id);
+					).all(turn.id) as ContentRow[];
 
 					for (const tb of thinking) {
 						const preview = tb.content.slice(0, 200) + (tb.content.length > 200 ? "…" : "");
 						lines.push(`    [thinking ${tb.sequence}] ${preview}`);
 					}
 
-					const text = db.query<{ sequence: number; content: string }, [string]>(
+					const text = db.prepare(
 						`SELECT sequence, content FROM assistant_text WHERE turn_id = ? ORDER BY sequence`,
-					).all(turn.id);
+					).all(turn.id) as ContentRow[];
 
 					for (const at of text) {
 						const preview = at.content.slice(0, 200) + (at.content.length > 200 ? "…" : "");
 						lines.push(`    [text ${at.sequence}] ${preview}`);
 					}
 
-					const tools = db.query<{ tool_name: string; called_at: string; is_error: number }, [string]>(
+					const tools = db.prepare(
 						`SELECT tool_name, called_at, is_error FROM tool_calls WHERE turn_id = ? ORDER BY called_at`,
-					).all(turn.id);
+					).all(turn.id) as ToolRow[];
 
 					for (const tc of tools) {
 						lines.push(`    [tool] ${tc.tool_name}${tc.is_error ? " ✗" : ""}`);
@@ -606,14 +604,15 @@ Useful queries:
 			}
 
 			if (sub === "stats") {
-				const rows = db.query<{
+				type StatsRow = {
 					role: string | null;
 					team: string | null;
 					tasks: number;
 					total_turns: number;
 					total_tokens: number | null;
 					total_cost: number | null;
-				}, []>(`
+				};
+				const rows = db.prepare(`
 					SELECT
 						t.role,
 						t.team,
@@ -625,7 +624,7 @@ Useful queries:
 					LEFT JOIN turns tr ON tr.task_id = t.id
 					GROUP BY t.role, t.team
 					ORDER BY total_tokens DESC
-				`).all();
+				`).all() as StatsRow[];
 
 				if (rows.length === 0) {
 					ctx.ui.notify("No stats recorded yet", "info");
@@ -649,7 +648,7 @@ Useful queries:
 			}
 
 			if (sub === "sessions") {
-				const rows = db.query<{
+				type SessionRow = {
 					id: string;
 					agent_name: string | null;
 					session_label: string | null;
@@ -658,7 +657,8 @@ Useful queries:
 					ended_at: string | null;
 					tasks: number;
 					tokens: number | null;
-				}, []>(`
+				};
+				const rows = db.prepare(`
 					SELECT
 						s.id,
 						s.agent_name,
@@ -674,7 +674,7 @@ Useful queries:
 					GROUP BY s.id
 					ORDER BY s.started_at DESC
 					LIMIT 20
-				`).all();
+				`).all() as SessionRow[];
 
 				if (rows.length === 0) {
 					ctx.ui.notify("No sessions recorded yet", "info");
