@@ -1,9 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import embeddedBrokerSource from "./broker.ts" with { type: "text" };
-import embeddedBrokerUiSource from "./broker-ui.ts" with { type: "text" };
+// @ts-expect-error — Bun-specific import assertion; tsc sees the default export as a module, not a string
+import _embeddedBrokerSource from "./broker.ts" with { type: "text" };
+const embeddedBrokerSource = _embeddedBrokerSource as unknown as string;
+// @ts-expect-error — Bun-specific import assertion; tsc sees the default export as a module, not a string
+import _embeddedBrokerUiSource from "./broker-ui.ts" with { type: "text" };
+const embeddedBrokerUiSource = _embeddedBrokerUiSource as unknown as string;
 import type { LoadedConfig } from "./config-store";
-import { orchestrationSessionName } from "./config-store";
+import { ensureStateDirectories, orchestrationSessionName } from "./config-store";
 import { buildOverlordArgs, createWorkspaceLaunchSpecs } from "./process-manager";
 import { ensureWorkspaceLayout } from "./workspace-manager";
 
@@ -431,32 +435,67 @@ export function cmuxLayoutForCommands(commands: Array<PaneLaunchCommand | string
 	return buildColumns(normalizedCommands, cols);
 }
 
-function runCmuxStart(loaded: LoadedConfig, mux: SelectedMultiplexer): void {
-	const leadershipCommand = buildLaunchCommand(loaded, "overlord", buildOverlordArgs(loaded), false);
-	const brokerArgs = localBrokerArgs(loaded);
-	const workspaces = [
-		{ name: "leadership", cwd: loaded.projectRoot, commands: [{ cwd: loaded.projectRoot, command: leadershipCommand }] },
-		...(brokerArgs ? [{ name: "broker", cwd: loaded.projectRoot, commands: [{ cwd: loaded.projectRoot, command: buildLaunchCommand(loaded, "broker", brokerArgs, false) }] }] : []),
-		...Object.keys(loaded.config.workspaces).sort().map(name => orderedWorkspaceCommands(loaded, name, false)),
-	];
+function writeCmuxLaunchScript(loaded: LoadedConfig, key: string, shellCommand: string): string {
+	const { runtimeRoot } = ensureStateDirectories(loaded);
+	const scriptDir = join(runtimeRoot, "scripts");
+	mkdirSync(scriptDir, { recursive: true });
+	const scriptPath = join(scriptDir, `${key}.sh`);
+	writeFileSync(scriptPath, `#!/bin/sh\n${shellCommand}\n`, "utf8");
+	chmodSync(scriptPath, 0o755);
+	return shellEsc(scriptPath);
+}
 
+/**
+ * Writes per-agent launch scripts and returns the workspace plan ready to
+ * pass to `cmux new-workspace`. Exported so tests can inspect outputs without
+ * needing a real cmux installation.
+ */
+export function buildCmuxWorkspaces(loaded: LoadedConfig): Array<{ name: string; cwd: string; commands: Array<{ cwd: string; command: string; title?: string; gitCeilingDir?: string }> }> {
+	function script(key: string, shellCommand: string): string {
+		return writeCmuxLaunchScript(loaded, key, shellCommand);
+	}
+	const leadershipCommand = script("orchestration-overlord", buildLaunchCommand(loaded, "overlord", buildOverlordArgs(loaded), false));
+	const brokerArgs = localBrokerArgs(loaded);
+	return [
+		{ name: "leadership", cwd: loaded.projectRoot, commands: [{ cwd: loaded.projectRoot, command: leadershipCommand }] },
+		...(brokerArgs ? [{ name: "broker", cwd: loaded.projectRoot, commands: [{ cwd: loaded.projectRoot, command: script("broker", buildLaunchCommand(loaded, "broker", brokerArgs, false)) }] }] : []),
+		...Object.keys(loaded.config.workspaces).sort().map(name => {
+			const windowPlan = orderedWorkspaceCommands(loaded, name, false);
+			return {
+				...windowPlan,
+				commands: windowPlan.commands.map(cmd => ({
+					...cmd,
+					command: script(`${name}-${cmd.title ?? "agent"}`, cmd.command),
+				})),
+			};
+		}),
+	];
+}
+
+function runCmuxStart(loaded: LoadedConfig, mux: SelectedMultiplexer, debug = false): void {
+	const workspaces = buildCmuxWorkspaces(loaded);
 	for (const workspace of workspaces) {
-		runOrThrow([mux.executable, "new-window"]);
-		runOrThrow([
+		const args = [
 			mux.executable,
 			"new-workspace",
 			"--name", workspace.name,
 			"--cwd", workspace.cwd,
 			"--layout", JSON.stringify(cmuxLayoutForCommands(workspace.commands)),
 			"--focus", "true",
-		]);
+		];
+		if (debug) {
+			console.log(args.map(shellEsc).join(" "));
+		} else {
+			runOrThrow(args);
+		}
 	}
 }
 
-export function startOrchestration(loaded: LoadedConfig): SelectedMultiplexer {
+export function startOrchestration(loaded: LoadedConfig, options?: { debug?: boolean }): SelectedMultiplexer {
+	const debug = options?.debug ?? false;
 	const mux = resolveMultiplexer();
 	if (mux.kind === "cmux") {
-		runCmuxStart(loaded, mux);
+		runCmuxStart(loaded, mux, debug);
 		return mux;
 	}
 	runTmuxLikeStart(loaded, mux);
