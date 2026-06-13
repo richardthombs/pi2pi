@@ -478,23 +478,44 @@ export function buildCmuxWorkspaces(loaded: LoadedConfig, writeScripts = true): 
 	];
 }
 
+/**
+ * Parse the output of `cmux list-workspaces` into a list of {ref, name} pairs.
+ * Lines look like: `* workspace:1  leadership  [selected]`
+ * Strips leading `*`, trailing annotations like `[selected]`, and surrounding whitespace.
+ */
+function parseCmuxWorkspaceList(output: string): Array<{ ref: string; name: string }> {
+	return output.split("\n")
+		.map(line => {
+			const match = line.trim().match(/^[*\s]*(workspace:\d+)\s+(.+)/);
+			if (!match) return null;
+			const ref = match[1];
+			const name = match[2].replace(/\s+\[[\w\s]+\]\s*$/, "").trim();
+			return { ref, name };
+		})
+		.filter((w): w is { ref: string; name: string } => !!w);
+}
+
+/** Returns the set of workspace names that belong to this orchestration session. */
+function orchestrationWorkspaceNames(loaded: LoadedConfig): Set<string> {
+	const names = new Set<string>(["leadership"]);
+	if (localBrokerArgs(loaded)) names.add("broker");
+	for (const name of Object.keys(loaded.config.workspaces)) names.add(name);
+	return names;
+}
+
 function runCmuxStart(loaded: LoadedConfig, mux: SelectedMultiplexer, debug = false): void {
 	const workspaces = buildCmuxWorkspaces(loaded, !debug);
 
-	// Guard: bail if any planned workspace already exists in the current window,
+	// Guard: bail if any planned workspace already exists,
 	// mirroring the tmux has-session check. Prevents duplicate workspace creation.
 	if (!debug) {
-		const listOutput = runOrThrow([mux.executable, "list-workspaces"]);
-		const existingNames = new Set(
-			listOutput.split("\n")
-				.map(line => line.match(/workspace:\d+\s+(.+)/)?.[1]?.trim())
-				.filter((n): n is string => !!n)
-		);
+		const existing = parseCmuxWorkspaceList(runOrThrow([mux.executable, "list-workspaces"]));
+		const existingNames = new Set(existing.map(w => w.name));
 		const conflicts = workspaces.map(w => w.name).filter(n => existingNames.has(n));
 		if (conflicts.length > 0) {
 			throw new Error(
 				`Orchestration workspace(s) already exist: ${conflicts.join(", ")}. ` +
-				`Close them in cmux manually before running orchestration start again.`
+				`Run 'pit orchestration stop' or close them in cmux manually before starting again.`
 			);
 		}
 	}
@@ -565,10 +586,23 @@ export function attachOrchestration(loaded: LoadedConfig, muxOverride?: Selected
 	return mux;
 }
 
+function runCmuxStop(loaded: LoadedConfig, mux: SelectedMultiplexer): void {
+	const existing = parseCmuxWorkspaceList(runOrThrow([mux.executable, "list-workspaces"]));
+	const orchNames = orchestrationWorkspaceNames(loaded);
+	const toClose = existing.filter(w => orchNames.has(w.name));
+	if (toClose.length === 0) {
+		throw new Error("No orchestration workspaces found in cmux.");
+	}
+	for (const workspace of toClose) {
+		runOrThrow([mux.executable, "close-workspace", "--workspace", workspace.ref]);
+	}
+}
+
 export function stopOrchestration(loaded: LoadedConfig): SelectedMultiplexer {
 	const mux = resolveMultiplexer();
 	if (mux.kind === "cmux") {
-		throw new Error("Stopping cmux-created windows is not yet supported; close them in cmux manually.");
+		runCmuxStop(loaded, mux);
+		return mux;
 	}
 	runOrThrow([mux.executable, "kill-session", "-t", orchestrationSessionName(loaded.config)]);
 	return mux;
@@ -577,7 +611,14 @@ export function stopOrchestration(loaded: LoadedConfig): SelectedMultiplexer {
 export function orchestrationStatus(loaded: LoadedConfig): { backend: MultiplexerKind; available: boolean; sessionName: string } {
 	const mux = resolveMultiplexer();
 	if (mux.kind === "cmux") {
-		return { backend: mux.kind, available: true, sessionName: orchestrationSessionName(loaded.config) };
+		try {
+			const existing = parseCmuxWorkspaceList(runOrThrow([mux.executable, "list-workspaces"]));
+			const orchNames = orchestrationWorkspaceNames(loaded);
+			const available = existing.some(w => orchNames.has(w.name));
+			return { backend: mux.kind, available, sessionName: orchestrationSessionName(loaded.config) };
+		} catch {
+			return { backend: mux.kind, available: false, sessionName: orchestrationSessionName(loaded.config) };
+		}
 	}
 	const result = Bun.spawnSync([mux.executable, "has-session", "-t", orchestrationSessionName(loaded.config)], { stdout: "ignore", stderr: "ignore" });
 	return { backend: mux.kind, available: result.exitCode === 0, sessionName: orchestrationSessionName(loaded.config) };
