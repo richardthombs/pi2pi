@@ -12,7 +12,8 @@
     "web": "bun web.ts",
     "test": "bun test",
     "build:pit": "bun build --compile cli.ts --outfile pit",
-    "link": "bun link"
+    "link": "bun link",
+    "reinstall": "bun link"
   },
   "dependencies": {
     "yaml": "^2.9.0"

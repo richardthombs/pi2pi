@@ -1,11 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-// @ts-expect-error — Bun-specific import assertion; tsc sees the default export as a module, not a string
-import _embeddedBrokerSource from "./broker.ts" with { type: "text" };
-const embeddedBrokerSource = _embeddedBrokerSource as unknown as string;
-// @ts-expect-error — Bun-specific import assertion; tsc sees the default export as a module, not a string
-import _embeddedBrokerUiSource from "./broker-ui.ts" with { type: "text" };
-const embeddedBrokerUiSource = _embeddedBrokerUiSource as unknown as string;
+import embeddedBrokerSource from "./broker.ts" with { type: "text" };
+import embeddedBrokerUiSource from "./broker-ui.ts" with { type: "text" };
 import type { LoadedConfig } from "./config-store";
 import { ensureStateDirectories, orchestrationSessionName } from "./config-store";
 import { buildOverlordArgs, createWorkspaceLaunchSpecs } from "./process-manager";
@@ -378,9 +374,17 @@ export function buildTmuxLikeCommandSequence(loaded: LoadedConfig, executable: s
 	return commands;
 }
 
-function runTmuxLikeStart(loaded: LoadedConfig, mux: SelectedMultiplexer): void {
+function debugEcho(command: string[]): void {
+	console.log(command.map(a => /[\s'"\\]/.test(a) ? shellEsc(a) : a).join(" "));
+}
+
+function runTmuxLikeStart(loaded: LoadedConfig, mux: SelectedMultiplexer, debug = false): void {
 	const sessionName = orchestrationSessionName(loaded.config);
 	const commands = buildTmuxLikeCommandSequence(loaded, mux.executable, mux.kind as "tmux" | "psmux");
+	if (debug) {
+		for (const command of commands) debugEcho(command);
+		return;
+	}
 	const hasSession = Bun.spawnSync(commands[0], { stdout: "ignore", stderr: "ignore" });
 	if (hasSession.exitCode === 0) {
 		throw new Error(`A ${mux.kind} session named \"${sessionName}\" already exists.`);
@@ -474,20 +478,42 @@ export function buildCmuxWorkspaces(loaded: LoadedConfig): Array<{ name: string;
 
 function runCmuxStart(loaded: LoadedConfig, mux: SelectedMultiplexer, debug = false): void {
 	const workspaces = buildCmuxWorkspaces(loaded);
-	for (const workspace of workspaces) {
-		const args = [
+
+	const exec = (command: string[]): string => {
+		if (debug) { debugEcho(command); return ""; }
+		return runOrThrow(command);
+	};
+
+	// When invoked from outside cmux (no CMUX_WORKSPACE_ID / CMUX_SURFACE_ID),
+	// new-workspace has no window context and opens a separate OS window per call.
+	// Create one dedicated window upfront and route every workspace into it.
+	// cmux new-window prints "OK <uuid>" — parse out just the UUID.
+	const outsideCmux = !process.env.CMUX_WORKSPACE_ID && !process.env.CMUX_SURFACE_ID;
+	let targetWindow: string | undefined;
+	if (outsideCmux) {
+		const output = exec([mux.executable, "new-window"]);
+		if (debug) {
+			targetWindow = "<new-window-id>";
+		} else {
+			const uuid = output.startsWith("OK ") ? output.slice(3).trim() : output.trim();
+			if (!uuid) throw new Error("cmux new-window did not return a window ID");
+			targetWindow = uuid;
+		}
+	}
+
+	for (let i = 0; i < workspaces.length; i++) {
+		const workspace = workspaces[i];
+		exec([
 			mux.executable,
 			"new-workspace",
 			"--name", workspace.name,
 			"--cwd", workspace.cwd,
 			"--layout", JSON.stringify(cmuxLayoutForCommands(workspace.commands)),
-			"--focus", "true",
-		];
-		if (debug) {
-			console.log(args.map(shellEsc).join(" "));
-		} else {
-			runOrThrow(args);
-		}
+			...(targetWindow ? ["--window", targetWindow] : []),
+			// Focus the first workspace (leadership) so it is visible on arrival;
+			// remaining workspaces are created as background tabs.
+			"--focus", i === 0 ? "true" : "false",
+		]);
 	}
 }
 
@@ -498,7 +524,7 @@ export function startOrchestration(loaded: LoadedConfig, options?: { debug?: boo
 		runCmuxStart(loaded, mux, debug);
 		return mux;
 	}
-	runTmuxLikeStart(loaded, mux);
+	runTmuxLikeStart(loaded, mux, debug);
 	return mux;
 }
 

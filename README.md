@@ -207,6 +207,22 @@ Replies from other agents are accumulated in a background list. Retrieve them wi
 
 A notification is shown whenever a new reply arrives.
 
+## Contributing / Development
+
+### Keeping the `pit` binary up to date
+
+The `pit` binary at `~/.bun/bin/pit` is installed via `bun link` and is **not** recompiled automatically when source files change. If you modify `cli.ts` or any module it imports, re-run:
+
+```bash
+bun link
+# or use the package.json shortcut:
+bun run link
+```
+
+Failure to do this means the installed `pit` binary will silently run stale code, which can cause confusing behaviour (e.g. new flags or fixes appearing in source but not taking effect).
+
+> **Tip:** if `pit` is behaving unexpectedly after a pull or source edit, `bun link` is the first thing to try.
+
 ## Notes
 
 - The broker evicts old connections if the same name reconnects (e.g. after a reload).
