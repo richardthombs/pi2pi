@@ -143,10 +143,14 @@ function routeApi(db: Database, url: URL): Response {
 				 FROM tool_calls WHERE turn_id = ? ORDER BY called_at`,
 			).all(turnId);
 		}
-		const contextDelta = db.prepare(
-			`SELECT message_count, total_message_count, messages_json
-			 FROM turn_contexts WHERE turn_id = ? LIMIT 1`,
-		).get(turnId) ?? null;
+		// Graceful fallback if turn_contexts table doesn't exist yet (pre-migration DB)
+		let contextDelta = null;
+		try {
+			contextDelta = db.prepare(
+				`SELECT message_count, total_message_count, messages_json
+				 FROM turn_contexts WHERE turn_id = ? LIMIT 1`,
+			).get(turnId) ?? null;
+		} catch { /* table doesn't exist — skip context delta */ }
 		return jsonResponse({
 			turn,
 			thinking_blocks: thinkingBlocks,
