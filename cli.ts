@@ -76,6 +76,7 @@ function usage(): never {
   pit workspace <name> set leader <member-name>
   pit workspace <name> init
   pit workspace <name> status
+  pit telemetry serve [--port <port>] [--db <path>]
 
 Optional:
   --config <path>   Use a different config file
@@ -387,6 +388,22 @@ function handleWorkspace(loaded: LoadedConfig, args: string[]): void {
 	usage();
 }
 
+async function handleTelemetry(args: string[]): Promise<void> {
+	const action = args[0];
+	if (action === "serve") {
+		let port = 7333;
+		let dbPath: string | undefined;
+		for (let i = 1; i < args.length; i++) {
+			if (args[i] === "--port" && args[i + 1]) { port = parseInt(args[++i], 10); }
+			else if (args[i] === "--db" && args[i + 1]) { dbPath = args[++i]; }
+		}
+		const { startTelemetryServer } = await import("./telemetry-server");
+		await startTelemetryServer({ port, dbPath });
+	} else {
+		console.log("Usage: pit telemetry serve [--port <port>] [--db <path>]");
+	}
+}
+
 try {
 	const parsed = parseCli(process.argv.slice(2));
 	if (parsed.args.length === 0) usage();
@@ -394,6 +411,11 @@ try {
 
 	if (entity === "init") {
 		handleInit(parsed.configPath);
+	} else if (entity === "telemetry") {
+		handleTelemetry(args).catch(e => {
+			console.error(e instanceof Error ? e.message : String(e));
+			process.exit(1);
+		});
 	} else {
 		const loaded = loadConfig(parsed.configPath);
 		_dispatchCommand(entity, loaded, args, parsed.debug);
