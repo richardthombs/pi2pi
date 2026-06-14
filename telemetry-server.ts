@@ -435,8 +435,10 @@ function renderTurnDetail(d) {
         + (c.is_error ? '\u2717' : '\u2713') + '</span>'
         + esc(c.tool_name) + '<span class="arrow">\u25b6</span></div>'
         + '<div class="tool-body" style="display:none">'
-        + '<div class="tool-sub-label">Args</div>'
-        + '<pre class="block-content">' + esc(fmtJson(c.args_json)) + '</pre>'
+        + (c.args_json && c.args_json !== 'null'
+            ? '<div class="tool-sub-label">Args</div>'
+              + '<pre class="block-content">' + esc(fmtJson(c.args_json)) + '</pre>'
+            : '<div class="tool-sub-label" style="color:#475569">(args not captured for this record)</div>')
         + (c.result_json
             ? '<div class="tool-sub-label">Result</div><pre class="block-content">'
               + esc(fmtJson(c.result_json)) + '</pre>'
