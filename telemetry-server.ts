@@ -1,4 +1,4 @@
-import { DatabaseSync } from "node:sqlite";
+import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -10,7 +10,7 @@ function resolveDbPath(override?: string): string {
 	return join(home, ".pi", "agent", "telemetry", "telemetry.db");
 }
 
-function openDb(dbPath?: string): DatabaseSync {
+function openDb(dbPath?: string): Database {
 	const path = resolveDbPath(dbPath);
 	if (!existsSync(path)) {
 		throw new Error(
@@ -18,11 +18,7 @@ function openDb(dbPath?: string): DatabaseSync {
 			`Run an agent with the telemetry extension first, or specify a different path with --db <path>`,
 		);
 	}
-	try {
-		return new DatabaseSync(path, { readOnly: true } as never);
-	} catch {
-		return new DatabaseSync(path);
-	}
+	return new Database(path, { readonly: true });
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -40,7 +36,7 @@ function errorResponse(message: string, status = 500): Response {
 
 // ── API routes ────────────────────────────────────────────────────────────────
 
-function handleApi(db: DatabaseSync, url: URL): Response {
+function handleApi(db: Database, url: URL): Response {
 	try {
 		return routeApi(db, url);
 	} catch (e) {
@@ -48,7 +44,7 @@ function handleApi(db: DatabaseSync, url: URL): Response {
 	}
 }
 
-function routeApi(db: DatabaseSync, url: URL): Response {
+function routeApi(db: Database, url: URL): Response {
 	const path = url.pathname;
 
 	// GET /api/sessions
