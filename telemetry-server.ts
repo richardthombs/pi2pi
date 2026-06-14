@@ -130,10 +130,19 @@ function routeApi(db: Database, url: URL): Response {
 		const assistantText = db.prepare(
 			`SELECT sequence, content FROM assistant_text WHERE turn_id = ? ORDER BY sequence`,
 		).all(turnId);
-		const toolCalls = db.prepare(
-			`SELECT id, tool_name, called_at, args_json, result_json, is_error, tool_call_id
-			 FROM tool_calls WHERE turn_id = ? ORDER BY called_at`,
-		).all(turnId);
+		// Graceful fallback for pre-migration DBs where result_json/tool_call_id may not exist yet
+		let toolCalls;
+		try {
+			toolCalls = db.prepare(
+				`SELECT id, tool_name, called_at, args_json, result_json, is_error, tool_call_id
+				 FROM tool_calls WHERE turn_id = ? ORDER BY called_at`,
+			).all(turnId);
+		} catch {
+			toolCalls = db.prepare(
+				`SELECT id, tool_name, called_at, args_json, is_error
+				 FROM tool_calls WHERE turn_id = ? ORDER BY called_at`,
+			).all(turnId);
+		}
 		const contextDelta = db.prepare(
 			`SELECT message_count, total_message_count, messages_json
 			 FROM turn_contexts WHERE turn_id = ? LIMIT 1`,
