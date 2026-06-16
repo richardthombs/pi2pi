@@ -3,15 +3,15 @@
 This directory contains the canonical artifacts for a single proof of concept.
 
 ## Current POC
-**Reliable agent-to-agent collaboration via long-lived agents**
+**Distinct long-lived specialist agents vs a single skill-switching agent**
 
-This PoC is testing whether there is enough merit in a **long-lived, manager-led collaborating agent team** to justify further investment and a later comparison against traditional **ephemeral sub-agent workflows**.
+This PoC is now testing whether a **long-lived, manager-led team of distinct specialist agents** is better than a **single agent that assumes multiple skills over time via instruction/skill files**, and whether **contextful repeated delegation** beats **contextless delegation**.
 
 ## Status
-- Stage: Definition complete, experiment not yet run
-- Mode: Planning/setup with direction review complete
-- Current recommendation: Run the smallest useful test before building broader framework capabilities
-- Latest review outcome: The POC is well-framed and bounded, but still has no execution evidence
+- Stage: Definition updated, experiment not yet run
+- Mode: Planning/setup with revised comparative hypothesis
+- Current recommendation: Run the smallest useful comparative test before building broader framework capabilities
+- Latest review outcome: The PoC is better targeted, but still has no execution evidence
 
 ## Artifacts
 - [`definition.md`](./definition.md) — problem, stakeholder, hypothesis, decision, scope, constraints, non-goals
@@ -23,19 +23,23 @@ This PoC is testing whether there is enough merit in a **long-lived, manager-led
 - [`final-report.md`](./final-report.md) — closure report stub for when the PoC is complete
 
 ## Snapshot
-- **Problem:** Humans may be forced to manage too much low-level coordination in complex software-delivery work.
-- **Question:** Does a long-lived collaborating agent team show enough practical merit to justify deeper investment?
+- **Problem:** A single agent may lose focus and context when it tries to combine orchestration, specialist thinking, and tool-heavy execution in one thread.
+- **Question:** Does a team of distinct long-lived agents produce better software-delivery outcomes than a single skill-switching agent, and does persistent delegation help?
 - **Primary value being tested:**
-  1. The human can stay at a higher level of abstraction.
-  2. Delegation plus synthesis produces useful practical outcomes.
-- **Smallest useful test:** One lightweight real feature-delivery task with a manager agent delegating to 2–3 specialist agents and returning a synthesized summary to the human.
+  1. distinct specialists outperform one skill-switching agent
+  2. a focused lead preserves the overall goal better during execution
+  3. contextful delegation improves quality and/or efficiency
+  4. the human can stay at a higher level of abstraction
+- **Primary outcomes:** result quality and token usage
+- **Smallest useful test:** One lightweight real feature-delivery task run in comparative form, with at least a single-agent-skills baseline and a lead-plus-specialists team run.
 
 ## Immediate next steps
 1. Choose one small real feature-delivery task.
-2. Define the minimal team structure and interaction rules.
-3. Run one end-to-end trial and record evidence.
+2. Define the minimal comparison setup.
+3. Run at least one single-agent baseline and one multi-agent team run.
+4. Record quality and token-usage observations.
 
 ## Current review summary
-- **Satisfied so far:** clear definition, bounded experiment plan, and explicit guardrails against drift
-- **Not yet satisfied:** any execution-based success criterion
-- **What to avoid next:** generalized framework work, memory systems, reliability/productization work before the first trial
+- **Satisfied so far:** clearer comparative hypothesis, bounded scope, and explicit guardrails against drift
+- **Not yet satisfied:** any execution-based evidence
+- **What to avoid next:** generalized framework work, memory systems, reliability/productization work before the first comparative run

@@ -1,51 +1,58 @@
 # Session Handoff
 
 ## Where this PoC currently stands
-The PoC has been clarified and defined. It is ready for execution planning and first-trial setup.
+The PoC has been reframed around a clearer comparative hypothesis. It is ready for execution planning and first-trial setup.
 
 ## Core framing
-- **POC focus:** Determine whether a long-lived, manager-led collaborating agent team shows enough merit in a software feature-delivery workflow to justify deeper investment.
-- **Not yet trying to prove:** That long-lived agents are superior to ephemeral sub-agents.
-- **Immediate test shape:** One lightweight real feature-delivery task with delegation to 2–3 specialists and a synthesized summary returned to the human.
+- **POC focus:** Determine whether a long-lived, manager-led team of distinct specialist agents is better than a single skill-switching agent for software feature delivery.
+- **Additional hypothesis:** A focused team lead should retain the overall goal better than an all-in-one agent, and persistent/contextful delegation should outperform fresh/contextless delegation.
+- **Primary outcomes:** quality of result and token usage, with human abstraction level as an additional important outcome.
+- **Immediate test shape:** One lightweight real feature-delivery task run in comparative form.
 
 ## What the next person/session should do
 1. Choose a small real feature-delivery task.
-2. Define the minimal team structure:
-   - manager agent
+2. Define the single-agent baseline:
+   - same task
+   - layered skill/instruction approach
+3. Define the minimal team structure:
+   - team lead
    - 2–3 specialists
-3. Establish the interaction rule that the human works mainly through the manager.
-4. Run one end-to-end trial.
-5. Record evidence in `poc/evidence/evidence-log.md`.
-6. Update `progress-review.md` and `decision-log.md` with results.
+4. Establish the interaction rule that the human works mainly through the lead in the team run.
+5. Run the baseline and the team mode.
+6. If cheap and informative, add a contextless-delegation variant.
+7. Record evidence in `poc/evidence/evidence-log.md`.
+8. Update `progress-review.md` and `decision-log.md` with results.
 
 ## Latest review outcome
-A direction review against the PoC definition found that the repo is well-framed but still pre-evidence:
-- the definition is clear,
-- the experiment is scoped,
-- drift guardrails are documented,
-- but no trial has yet been run.
+The repo is now better targeted around the actual question of interest:
+- distinct specialists vs one skill-switching agent
+- focused orchestration vs all-in-one execution
+- contextful vs contextless delegation
 
-This means the POC has produced **clarity**, not yet **proof**.
-The next session should prioritize evidence creation over any more framework shaping.
+However, it is still entirely pre-evidence.
+The next session should prioritize comparative evidence creation over any more framework shaping.
 
 ## Success lens to keep in mind
 The PoC succeeds if the trial shows:
-- reduced low-level human coordination,
-- differentiated specialist contributions,
-- and a manager summary that meaningfully reduces cognitive load.
+- better outcomes from distinct specialists,
+- a lead that remains focused and synthesizes well,
+- signs that persistent delegation helps,
+- acceptable or better token usage,
+- and reduced low-level human coordination.
 
 ## Guardrails
 - Do not expand into full platform engineering before the first result.
-- Do not broaden scope into full SDLC automation.
+- Do not turn the first trial into a large benchmark program.
 - Do not add features unless they directly support the current hypothesis.
 
 ## Key open questions
 - Which exact feature-delivery task should be used?
+- What makes for a fair single-agent baseline?
 - Which specialist roles are most informative for that task?
-- How lightweight can the communication/reliability implementation be while still supporting the trial?
+- How will token usage be captured in a lightweight but honest way?
 
 ## Do not spend time yet on
-- comparing against ephemeral sub-agents
-- generalized framework abstractions
-- durable memory implementation
 - production hardening or polish
+- generalized framework abstractions
+- durable memory implementation beyond what the experiment directly needs
+- broad multi-task evaluation suites
