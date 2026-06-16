@@ -53,15 +53,11 @@ function routeApi(db: Database, url: URL): Response {
 			SELECT
 				s.id, s.agent_name, s.session_label, s.model, s.provider, s.cwd,
 				s.started_at, s.ended_at,
-				COUNT(DISTINCT t.id) AS task_count,
-				SUM(tr.tokens_total) AS total_tokens,
-				SUM(tr.cost_total)   AS total_cost,
-				MAX(tc.is_error)     AS has_errors
+				(SELECT COUNT(*)        FROM tasks      WHERE session_id = s.id) AS task_count,
+				(SELECT SUM(tokens_total) FROM turns    WHERE session_id = s.id) AS total_tokens,
+				(SELECT SUM(cost_total)   FROM turns    WHERE session_id = s.id) AS total_cost,
+				(SELECT stop_reason FROM turns WHERE session_id = s.id ORDER BY started_at DESC LIMIT 1) AS last_stop_reason
 			FROM sessions s
-			LEFT JOIN tasks t   ON t.session_id = s.id
-			LEFT JOIN turns tr  ON tr.session_id = s.id
-			LEFT JOIN tool_calls tc ON tc.session_id = s.id
-			GROUP BY s.id
 			ORDER BY s.started_at DESC
 		`).all();
 		return jsonResponse(rows);
@@ -78,15 +74,12 @@ function routeApi(db: Database, url: URL): Response {
 				t.id, t.session_id, t.started_at, t.ended_at,
 				t.pi2pi_message_id, t.from_agent, t.overlord_request,
 				t.role, t.team, t.user_prompt,
-				COUNT(DISTINCT tr.id) AS turn_count,
-				SUM(tr.tokens_total)  AS total_tokens,
-				SUM(tr.cost_total)    AS total_cost,
-				MAX(tc.is_error)      AS has_errors
+				(SELECT COUNT(*)          FROM turns      WHERE task_id = t.id) AS turn_count,
+				(SELECT SUM(tokens_total) FROM turns      WHERE task_id = t.id) AS total_tokens,
+				(SELECT SUM(cost_total)   FROM turns      WHERE task_id = t.id) AS total_cost,
+				(SELECT stop_reason FROM turns WHERE task_id = t.id ORDER BY turn_index DESC LIMIT 1) AS last_stop_reason
 			FROM tasks t
-			LEFT JOIN turns tr  ON tr.task_id = t.id
-			LEFT JOIN tool_calls tc ON tc.task_id = t.id
 			WHERE t.session_id = ?
-			GROUP BY t.id
 			ORDER BY t.started_at ASC
 		`).all(sessionId);
 		return jsonResponse({ session, tasks });
@@ -105,8 +98,9 @@ function routeApi(db: Database, url: URL): Response {
 		const turns = db.prepare(`
 			SELECT
 				tr.id, tr.turn_index, tr.started_at, tr.ended_at,
-				tr.model, tr.tokens_input, tr.tokens_output, tr.tokens_total,
-				tr.cost_total, tr.stop_reason,
+				tr.model, tr.tokens_input, tr.tokens_output,
+				tr.tokens_cache_rd, tr.tokens_cache_wr, tr.tokens_total,
+				tr.cost_input, tr.cost_output, tr.cost_total, tr.stop_reason,
 				COUNT(tc.id)     AS tool_call_count,
 				MAX(tc.is_error) AS has_errors
 			FROM turns tr
@@ -232,6 +226,16 @@ tr.clickable:hover td{background:#1a1d2e;cursor:pointer}
 pre.block-content{font-size:12px;white-space:pre-wrap;word-break:break-word;padding:8px;color:#94a3b8;line-height:1.5;max-height:500px;overflow-y:auto;font-family:Menlo,Consolas,monospace}
 .error-panel{background:#2d0a0a;color:#fca5a5;padding:12px 16px;border-radius:4px;border:1px solid #7f1d1d;margin:12px 0}
 .muted{color:#475569;font-style:italic;font-size:13px;padding:8px 0}
+th[title]{cursor:help;text-decoration:underline dotted;text-underline-offset:3px}
+.status-ok{color:#86efac}
+.status-other{color:#94a3b8}
+.token-breakdown{display:flex;gap:0;border:1px solid #2d3148;border-radius:4px;overflow:hidden;margin-bottom:6px;font-size:12px}
+.tb-item{flex:1;padding:8px 12px;background:#0b0d16;border-right:1px solid #2d3148}
+.tb-item:last-child{border-right:none}
+.tb-item.tb-total{background:#0f1117}
+.tb-label{color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
+.tb-val{color:#cbd5e1;font-weight:600}
+.tb-cost{color:#64748b;margin-top:2px}
 `;
 
 	const js = `
@@ -251,6 +255,17 @@ function esc(s) {
 function fmtJson(s) {
   if (!s) return '';
   try { return JSON.stringify(JSON.parse(s), null, 2); } catch (e) { return s; }
+}
+function statusIcon(r) {
+  if (!r) return '<span class="status-other" title="No turns completed yet">—</span>';
+  if (r === 'stop') return '<span class="status-ok" title="Last turn ended normally (stop)">✓</span>';
+  return '<span class="status-other" title="Last turn stop reason: ' + esc(r) + '">△</span>';
+}
+function tbItem(label, val, cost) {
+  return '<div class="tb-item"><div class="tb-label">' + label + '</div>'
+    + '<div class="tb-val">' + val + '</div>'
+    + (cost != null ? '<div class="tb-cost">' + cost + '</div>' : '')
+    + '</div>';
 }
 
 // \u2500\u2500 Router \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -285,7 +300,11 @@ async function renderSessions(el) {
     if (!rows.length) { el.innerHTML = '<p class="muted">No sessions recorded.</p>'; return; }
     var h = '<h2>Sessions</h2><table>'
       + '<thead><tr><th>Label</th><th>Agent</th><th>Model</th><th>Started</th>'
-      + '<th>Duration</th><th>Tasks</th><th>Cost</th><th></th></tr></thead><tbody>';
+      + '<th>Duration</th>'
+      + '<th title="Number of tasks (agent invocations) in this session">Tasks</th>'
+      + '<th title="Estimated total cost based on pi\u2019s internal pricing tables. May not match actual provider billing.">Cost</th>'
+      + '<th title="\u2713 = last turn ended normally \u00b7 \u25b3 = other stop reason (tool use, length, error\u2026)"></th>'
+      + '</tr></thead><tbody>';
     for (var s of rows) {
       h += '<tr class="clickable" data-href="#/sessions/' + esc(s.id) + '">'
         + '<td>' + esc(s.session_label || '\u2014') + '</td>'
@@ -295,7 +314,7 @@ async function renderSessions(el) {
         + '<td>' + formatDuration(s.started_at, s.ended_at) + '</td>'
         + '<td>' + (s.task_count || 0) + '</td>'
         + '<td>' + formatCost(s.total_cost) + '</td>'
-        + '<td>' + (s.has_errors ? '\u26a0\ufe0f' : '\u2713') + '</td></tr>';
+        + '<td>' + statusIcon(s.last_stop_reason) + '</td></tr>';
     }
     el.innerHTML = h + '</tbody></table>';
   } catch (e) { showError(el, e.message); }
@@ -312,7 +331,11 @@ async function renderSession(el, sessionId) {
       + '<h2>Tasks</h2>';
     if (!tasks.length) { el.innerHTML = h + '<p class="muted">No tasks.</p>'; return; }
     h += '<table><thead><tr><th>Role</th><th>Team</th><th>Request</th>'
-      + '<th>Turns</th><th>Cost</th><th>Duration</th><th></th></tr></thead><tbody>';
+      + '<th title="Number of LLM round-trips to complete this task">Turns</th>'
+      + '<th title="Estimated cost based on pi\u2019s internal pricing tables. May not match actual provider billing.">Cost</th>'
+      + '<th>Duration</th>'
+      + '<th title="\u2713 = last turn ended normally \u00b7 \u25b3 = other stop reason (tool use, length, error\u2026)"></th>'
+      + '</tr></thead><tbody>';
     for (var t of tasks) {
       h += '<tr class="clickable" data-href="#/tasks/' + esc(t.id) + '">'
         + '<td>' + esc(t.role || '\u2014') + '</td>'
@@ -321,7 +344,7 @@ async function renderSession(el, sessionId) {
         + '<td>' + (t.turn_count || 0) + '</td>'
         + '<td>' + formatCost(t.total_cost) + '</td>'
         + '<td>' + formatDuration(t.started_at, t.ended_at) + '</td>'
-        + '<td>' + (t.has_errors ? '\u26a0\ufe0f' : '\u2713') + '</td></tr>';
+        + '<td>' + statusIcon(t.last_stop_reason) + '</td></tr>';
     }
     el.innerHTML = h + '</tbody></table>';
   } catch (e) { showError(el, e.message); }
@@ -336,8 +359,25 @@ async function renderTask(el, taskId, expandIdx) {
     var d = await apiFetch('/api/tasks/' + taskId);
     var t = d.task, turns = d.turns;
     var label = t.session_label || t.session_id.slice(0, 8);
-    var totCost = turns.reduce(function(s, r) { return s + (r.cost_total || 0); }, 0);
-    var totTok  = turns.reduce(function(s, r) { return s + (r.tokens_total || 0); }, 0);
+    var totInput   = turns.reduce(function(s, r) { return s + (r.tokens_input   || 0); }, 0);
+    var totOutput  = turns.reduce(function(s, r) { return s + (r.tokens_output  || 0); }, 0);
+    var totCacheRd = turns.reduce(function(s, r) { return s + (r.tokens_cache_rd || 0); }, 0);
+    var totCacheWr = turns.reduce(function(s, r) { return s + (r.tokens_cache_wr || 0); }, 0);
+    var totTok     = turns.reduce(function(s, r) { return s + (r.tokens_total   || 0); }, 0);
+    var totCostIn  = turns.reduce(function(s, r) { return s + (r.cost_input     || 0); }, 0);
+    var totCostOut = turns.reduce(function(s, r) { return s + (r.cost_output    || 0); }, 0);
+    var totCost    = turns.reduce(function(s, r) { return s + (r.cost_total     || 0); }, 0);
+    var totCacheCost = Math.max(0, totCost - totCostIn - totCostOut);
+    var taskBreakdown = '<div class="token-breakdown">'
+      + tbItem('Input',  formatTokens(totInput),  formatCost(totCostIn))
+      + tbItem('Output', formatTokens(totOutput), formatCost(totCostOut))
+      + (totCacheRd ? tbItem('Cache rd', formatTokens(totCacheRd), null) : '')
+      + (totCacheWr ? tbItem('Cache wr', formatTokens(totCacheWr), null) : '')
+      + (totCacheRd + totCacheWr > 0 ? tbItem('Cache cost', '\u2014', formatCost(totCacheCost)) : '')
+      + '<div class="tb-item tb-total"><div class="tb-label">Total</div>'
+      + '<div class="tb-val">' + formatTokens(totTok) + ' tok</div>'
+      + '<div class="tb-cost">' + formatCost(totCost) + '</div></div>'
+      + '</div>';
     var h = '<nav class="breadcrumb">'
       + '<a data-href="#/sessions">Sessions</a> \u203a '
       + '<a data-href="#/sessions/' + esc(t.session_id) + '">' + esc(label) + '</a> \u203a '
@@ -348,17 +388,18 @@ async function renderTask(el, taskId, expandIdx) {
       + (t.role      ? '<span>Role: '  + esc(t.role)       + '</span>' : '')
       + (t.team      ? '<span>Team: '  + esc(t.team)       + '</span>' : '')
       + (t.from_agent? '<span>From: '  + esc(t.from_agent) + '</span>' : '')
-      + '<span>' + formatTokens(totTok) + ' tok</span>'
-      + '<span>' + formatCost(totCost) + '</span>'
       + '<span>' + formatDuration(t.started_at, t.ended_at) + '</span>'
       + '</div></div>'
+      + taskBreakdown
       + '<h3>Turns (' + turns.length + ')</h3>';
     for (var tr of turns) {
       h += '<div class="turn-row">'
         + '<div class="turn-header" data-turn-id="' + esc(tr.id) + '">'
         + '<span class="turn-idx">Turn ' + tr.turn_index + '</span>'
-        + '<span class="turn-stat">' + formatTokens(tr.tokens_total) + ' tok</span>'
-        + '<span class="turn-stat">' + formatCost(tr.cost_total) + '</span>'
+        + '<span class="turn-stat" title="Total tokens sent and received this turn (fresh input + output + cache reads + cache writes)">'
+          + formatTokens(tr.tokens_total) + ' tok</span>'
+        + '<span class="turn-stat" title="Estimated cost for this turn. Cache costs are included in the total but not stored individually.">'
+          + formatCost(tr.cost_total) + '</span>'
         + '<span class="turn-stat">stop=' + esc(tr.stop_reason || '\u2014') + '</span>'
         + '<span class="turn-stat">' + (tr.tool_call_count || 0) + ' tools</span>'
         + (tr.has_errors ? '<span class="turn-stat" style="color:#fca5a5">\u26a0 errors</span>' : '')
@@ -402,7 +443,25 @@ async function toggleTurn(turnId) {
 
 function renderTurnDetail(d) {
   var tb = d.thinking_blocks, at = d.assistant_text, tc = d.tool_calls, cd = d.context_delta;
+  var tu = d.turn;
   var h = '';
+  // Token / cost breakdown
+  if (tu && tu.tokens_total != null) {
+    var cacheTokens = (tu.tokens_cache_rd || 0) + (tu.tokens_cache_wr || 0);
+    var cacheCost = (tu.cost_total != null && tu.cost_input != null && tu.cost_output != null)
+      ? Math.max(0, tu.cost_total - tu.cost_input - tu.cost_output) : null;
+    h += '<div class="token-breakdown">';
+    h += tbItem('Input',  formatTokens(tu.tokens_input),  formatCost(tu.cost_input));
+    h += tbItem('Output', formatTokens(tu.tokens_output), formatCost(tu.cost_output));
+    if (tu.tokens_cache_rd) h += tbItem('Cache rd', formatTokens(tu.tokens_cache_rd), null);
+    if (tu.tokens_cache_wr) h += tbItem('Cache wr', formatTokens(tu.tokens_cache_wr), null);
+    if (cacheTokens && cacheCost != null)
+      h += tbItem('Cache cost', '\u2014', formatCost(cacheCost));
+    h += '<div class="tb-item tb-total"><div class="tb-label">Total</div>'
+      + '<div class="tb-val">' + formatTokens(tu.tokens_total) + ' tok</div>'
+      + '<div class="tb-cost" title="Sum of input, output, and all cache costs">' + formatCost(tu.cost_total) + '</div></div>';
+    h += '</div>';
+  }
   if (tb.length) {
     var chars = tb.reduce(function(s, b) { return s + b.content.length; }, 0);
     h += '<div class="section">'
